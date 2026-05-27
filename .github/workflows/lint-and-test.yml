@@ -80,6 +80,3 @@ jobs:
 
       - name: Test
         run: go tool gotestsum --format github-actions -- -race ./...
-
-
-

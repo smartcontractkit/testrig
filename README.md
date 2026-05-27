@@ -32,3 +32,11 @@ testrig diagnose --iterations 10 \
 ## Use Go Instead of CLI
 
 You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [example](./tools/testrig/main.go) on how.
+
+## Contributing
+
+Use [just](https://github.com/casey/just) instead of `make`.
+
+```sh
+just lefthook # Install pre-commit and pre-push hooks
+```

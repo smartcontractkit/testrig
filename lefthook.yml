@@ -22,10 +22,23 @@ pre-commit:
         for f in {staged_files}; do
           [ -f "$f" ] || continue
           [ -s "$f" ] || continue
-          [ "$(tail -c1 "$f")" = $'\n' ] && continue
+          # $(tail -c1) drops a trailing newline in command substitution; compare the byte instead.
+          last=$(tail -c1 "$f" | od -An -tu1 | tr -d ' \n')
+          [ "$last" = "10" ] && continue
           printf '\n' >> "$f"
         done
       stage_fixed: true
+
+    betterleaks:
+      tags: security
+      run: betterleaks git . --pre-commit --staged --redact -v
+
+    codespell:
+      tags: linter
+      glob: "*"
+      exclude:
+        - go.sum
+      run: codespell {staged_files}
 
     actionlint:
       tags: linter
@@ -36,7 +49,7 @@ pre-commit:
       tags: linter
       glob: "*.go"
       root: ""
-      run: golangci-lint run --fast {staged_files}
+      run: golangci-lint run --fast ./...
 
 pre-push:
   parallel: true
@@ -55,7 +68,3 @@ pre-push:
       tags: test
       glob: "*.go"
       run: go test -short ./...
-
-
-
-
