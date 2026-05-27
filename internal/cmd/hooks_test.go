@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/smartcontractkit/testrig/internal/hooks"
 )
 
 // touchCmd is a shell snippet that creates a marker file at p, so a test can
@@ -18,8 +20,9 @@ func touchCmd(p string) string { return "touch " + p }
 
 func newCmdWithHookFlags(setup, teardown string) *cobra.Command {
 	c := &cobra.Command{Use: "x"}
-	c.Flags().String("global-setup", setup, "")
-	c.Flags().String("global-teardown", teardown, "")
+	hooks.RegisterPersistentFlags(c.Flags())
+	_ = c.Flags().Set("global-setup", setup)
+	_ = c.Flags().Set("global-teardown", teardown)
 	c.SetContext(context.Background())
 	return c
 }

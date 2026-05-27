@@ -37,10 +37,7 @@ testrig diagnose --iterations 10 -- --timeout=15m ./...`,
 func init() {
 	rootCmd.PersistentFlags().
 		Bool("ai-output", !term.IsTerminal(os.Stdout.Fd()), "Use sparse output for agent tooling (and robotic humans)")
-	rootCmd.PersistentFlags().String("global-setup", "", "Shell command to run before tests")
-	rootCmd.PersistentFlags().String("global-teardown", "", "Shell command to run after tests")
-	rootCmd.PersistentFlags().String("iteration-setup", "", "Shell command to run before each diagnose iteration")
-	rootCmd.PersistentFlags().String("iteration-teardown", "", "Shell command to run after each diagnose iteration")
+	hooks.RegisterPersistentFlags(rootCmd.PersistentFlags())
 
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(gotestsumCmd)

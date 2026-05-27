@@ -13,6 +13,8 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/smartcontractkit/testrig/internal/hooks"
 )
 
 // App is the flag-bound configuration shared across testrig subcommands.
@@ -27,6 +29,15 @@ type App struct {
 	Shuffle            bool
 	IterationSetup     string
 	IterationTeardown  string
+	shellHooks         map[string]string
+}
+
+// ShellCommand returns the shell command bound to a catalog flag (e.g. iteration-setup).
+func (a *App) ShellCommand(flag string) string {
+	if a == nil || a.shellHooks == nil {
+		return ""
+	}
+	return a.shellHooks[flag]
 }
 
 // Valid values for --fail-fast-on.
@@ -53,22 +64,6 @@ var flagRegistry = map[string]flagBinder{
 			return err
 		}
 		conf.AIOutput = v
-		return nil
-	},
-	"iteration-setup": func(conf *App, flags *pflag.FlagSet) error {
-		v, err := flags.GetString("iteration-setup")
-		if err != nil {
-			return err
-		}
-		conf.IterationSetup = v
-		return nil
-	},
-	"iteration-teardown": func(conf *App, flags *pflag.FlagSet) error {
-		v, err := flags.GetString("iteration-teardown")
-		if err != nil {
-			return err
-		}
-		conf.IterationTeardown = v
 		return nil
 	},
 	"iterations": func(conf *App, flags *pflag.FlagSet) error {
@@ -183,9 +178,38 @@ func defaultApp() *App {
 	return conf
 }
 
+func bindCatalogShellHooks(conf *App, flags *pflag.FlagSet) error {
+	if conf.shellHooks == nil {
+		conf.shellHooks = make(map[string]string)
+	}
+	for _, e := range hooks.Catalog {
+		if e.Scope != hooks.ScopeIteration {
+			continue
+		}
+		if flags.Lookup(e.Flag) == nil {
+			continue
+		}
+		v, err := flags.GetString(e.Flag)
+		if err != nil {
+			return err
+		}
+		conf.shellHooks[e.Flag] = v
+		switch e.Name {
+		case "IterationSetup":
+			conf.IterationSetup = v
+		case "IterationTeardown":
+			conf.IterationTeardown = v
+		}
+	}
+	return nil
+}
+
 func applyFlags(cmd *cobra.Command, conf *App) error {
 	flags := cmd.Flags()
 	var errs []error
+	if err := bindCatalogShellHooks(conf, flags); err != nil {
+		errs = append(errs, err)
+	}
 	for name, bind := range flagRegistry {
 		if flags.Lookup(name) == nil {
 			continue

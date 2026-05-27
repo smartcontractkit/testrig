@@ -5,6 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/smartcontractkit/testrig/internal/hooks"
 )
 
 func TestRootCommandName(t *testing.T) {
@@ -34,14 +36,9 @@ func TestSubcommandCommandPaths(t *testing.T) {
 	}
 }
 
-func TestRootCommandHasGlobalHookFlags(t *testing.T) {
+func TestRootCommandHasCatalogHookFlags(t *testing.T) {
 	t.Parallel()
-	assert.NotNil(t, rootCmd.PersistentFlags().Lookup("global-setup"), "--global-setup flag missing")
-	assert.NotNil(t, rootCmd.PersistentFlags().Lookup("global-teardown"), "--global-teardown flag missing")
-}
-
-func TestRootCommandHasIterationHookFlags(t *testing.T) {
-	t.Parallel()
-	assert.NotNil(t, rootCmd.PersistentFlags().Lookup("iteration-setup"), "--iteration-setup flag missing")
-	assert.NotNil(t, rootCmd.PersistentFlags().Lookup("iteration-teardown"), "--iteration-teardown flag missing")
+	for _, e := range hooks.Catalog {
+		assert.NotNilf(t, rootCmd.PersistentFlags().Lookup(e.Flag), "flag --%s missing", e.Flag)
+	}
 }

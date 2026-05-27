@@ -26,4 +26,4 @@ go test ./...                 # Test
 
 **Public API vs CLI are separate layers.** `hooks.go` / `testrig.go` are the library surface. The CLI in `internal/cmd/` wraps that. Don't put CLI logic in the root package.
 
-**`example_test.go` doubles as documentation.** All `Example*` functions should show how an actual user would utilize this as a package.
+**Hook catalog drives CLI flags and docs.** Add lifecycle hooks in [`internal/hooks/catalog.go`](internal/hooks/catalog.go) (`Catalog` slice), then wire `RunOptions.Hook`, public `hooks.go` registrar, and `go generate`. Document timing in godoc on registrars in [`hooks.go`](hooks.go) as `// Name registers a hook to <when>.` `hooks.RegisterPersistentFlags` registers Cobra flags from the catalog.

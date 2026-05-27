@@ -11,7 +11,16 @@ testrig diagnose --iterations 5 -- ./... # Run your test suite 5 times and see d
 
 ### Lifecycle Hooks
 
-Run shell commands at key points in the test lifecycle:
+Run shell commands at key points in the test lifecycle. See [HOOKS.md](./HOOKS.md) for details (table is generated from [`hooks.go`](./hooks.go) via `go generate`).
+
+<!-- testrig:gendocs:table -->
+| Option | When it runs | CLI equivalent |
+| ------ | ------------ | -------------- |
+| `testrig.GlobalSetup` | Run once before any tests | `--global-setup` |
+| `testrig.GlobalTeardown` | Run once after all tests finish | `--global-teardown` |
+| `testrig.IterationSetup` | Run before each diagnose iteration | `--iteration-setup` |
+| `testrig.IterationTeardown` | Run after each diagnose iteration | `--iteration-teardown` |
+<!-- /testrig:gendocs:table -->
 
 ```sh
 # Spin up dependencies before any test, tear down after
@@ -29,7 +38,7 @@ testrig diagnose --iterations 10 \
 
 ## Use Go Instead of CLI
 
-You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [example_test.go](./example_test.go) on how.
+You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [our example setup](./tools/test/README.md).
 
 ## Contributing
 

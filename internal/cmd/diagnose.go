@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"context"
-	"errors"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -41,38 +39,9 @@ testrig diagnose --iterations 10 -- ./...`,
 			return err
 		}
 
-		var iterSetup, iterTeardown hooks.Hook
-
-		if runnerOpts.IterationSetup != nil || conf.IterationSetup != "" {
-			iterSetup = func(ctx context.Context) error {
-				if runnerOpts.IterationSetup != nil {
-					if err := runnerOpts.IterationSetup(ctx); err != nil {
-						return err
-					}
-				}
-				if conf.IterationSetup != "" {
-					return hooks.NewShellHook(conf.IterationSetup)(ctx)
-				}
-				return nil
-			}
-		}
-
-		if runnerOpts.IterationTeardown != nil || conf.IterationTeardown != "" {
-			iterTeardown = func(ctx context.Context) error {
-				var err error
-				if conf.IterationTeardown != "" {
-					if tdErr := hooks.NewShellHook(conf.IterationTeardown)(ctx); tdErr != nil {
-						err = errors.Join(err, tdErr)
-					}
-				}
-				if runnerOpts.IterationTeardown != nil {
-					if tdErr := runnerOpts.IterationTeardown(ctx); tdErr != nil {
-						err = errors.Join(err, tdErr)
-					}
-				}
-				return err
-			}
-		}
+		shell := conf.ShellCommand
+		iterSetup := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseSetup)
+		iterTeardown := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseTeardown)
 
 		return runner.Diagnose(cmd.Context(), conf, out, args, iterSetup, iterTeardown)
 	}),
