@@ -2,8 +2,6 @@
 
 A Go test harness for running your tests with universal setup and teardown, with a focus on hunting and fixing flaky tests.
 
----
-
 ## Find Flaky Tests
 
 ```sh
