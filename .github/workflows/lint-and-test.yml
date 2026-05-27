@@ -45,8 +45,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    env:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -61,15 +59,7 @@ jobs:
 
       - name: Test
         id: run-tests
-        run: go tool gotestsum --format github-actions --junitfile=junit.xml -- -cover ./... -coverprofile=coverage.txt
-      - name: Code coverage
-        if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v5
-      - name: Upload test results to Codecov
-        if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v5
-        with:
-          report_type: test_results
+        run: go tool gotestsum --format github-actions -- ./...
 
   test-race:
     name: Test (race)
@@ -90,3 +80,6 @@ jobs:
 
       - name: Test
         run: go tool gotestsum --format github-actions -- -race ./...
+
+
+

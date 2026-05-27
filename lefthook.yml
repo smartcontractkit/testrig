@@ -1,0 +1,61 @@
+pre-commit:
+  parallel: true
+  commands:
+    trailing-whitespace:
+      tags: style
+      glob: "*"
+      run: |
+        for f in {staged_files}; do
+          [ -f "$f" ] || continue
+          if [ "$(uname -s)" = Darwin ]; then
+            sed -i '' -e 's/[[:blank:]]*$//' "$f"
+          else
+            sed -i -e 's/[[:blank:]]*$//' "$f"
+          fi
+        done
+      stage_fixed: true
+
+    end-of-file-fixer:
+      tags: style
+      glob: "*"
+      run: |
+        for f in {staged_files}; do
+          [ -f "$f" ] || continue
+          [ -s "$f" ] || continue
+          [ "$(tail -c1 "$f")" = $'\n' ] && continue
+          printf '\n' >> "$f"
+        done
+      stage_fixed: true
+
+    actionlint:
+      tags: linter
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: actionlint {staged_files}
+
+    golangci-lint:
+      tags: linter
+      glob: "*.go"
+      root: ""
+      run: golangci-lint run --fast {staged_files}
+
+pre-push:
+  parallel: true
+  commands:
+    go-mod-tidy:
+      tags: linter
+      glob: "go.mod"
+      run: go mod tidy
+
+    go-generate:
+      tags: linter
+      glob: "*.go"
+      run: go generate ./...
+
+    go-short-tests:
+      tags: test
+      glob: "*.go"
+      run: go test -short ./...
+
+
+
+
