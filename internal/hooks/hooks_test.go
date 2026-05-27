@@ -1,4 +1,4 @@
-package testrig
+package hooks
 
 import (
 	"context"
@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGlobalSetupCallsHook(t *testing.T) {
+func TestRunGlobalSetupCallsHook(t *testing.T) {
 	t.Parallel()
 	called := false
-	err := GlobalSetup(context.Background(), func(_ context.Context) error {
+	err := RunGlobalSetup(context.Background(), func(_ context.Context) error {
 		called = true
 		return nil
 	})
@@ -20,17 +20,17 @@ func TestGlobalSetupCallsHook(t *testing.T) {
 	assert.True(t, called)
 }
 
-func TestGlobalSetupPropagatesError(t *testing.T) {
+func TestRunGlobalSetupPropagatesError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("setup failed")
-	err := GlobalSetup(context.Background(), func(_ context.Context) error { return want })
+	err := RunGlobalSetup(context.Background(), func(_ context.Context) error { return want })
 	assert.ErrorIs(t, err, want)
 }
 
-func TestGlobalTeardownCallsHook(t *testing.T) {
+func TestRunGlobalTeardownCallsHook(t *testing.T) {
 	t.Parallel()
 	called := false
-	err := GlobalTeardown(context.Background(), func(_ context.Context) error {
+	err := RunGlobalTeardown(context.Background(), func(_ context.Context) error {
 		called = true
 		return nil
 	})
@@ -38,17 +38,17 @@ func TestGlobalTeardownCallsHook(t *testing.T) {
 	assert.True(t, called)
 }
 
-func TestGlobalTeardownPropagatesError(t *testing.T) {
+func TestRunGlobalTeardownPropagatesError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("teardown failed")
-	err := GlobalTeardown(context.Background(), func(_ context.Context) error { return want })
+	err := RunGlobalTeardown(context.Background(), func(_ context.Context) error { return want })
 	assert.ErrorIs(t, err, want)
 }
 
 func TestNilHookIsNoOp(t *testing.T) {
 	t.Parallel()
-	assert.NoError(t, GlobalSetup(context.Background(), nil))
-	assert.NoError(t, GlobalTeardown(context.Background(), nil))
+	assert.NoError(t, RunGlobalSetup(context.Background(), nil))
+	assert.NoError(t, RunGlobalTeardown(context.Background(), nil))
 }
 
 func TestNewShellHookRunsCommand(t *testing.T) {
@@ -85,10 +85,10 @@ func TestNewShellHookSuccessReturnsNoError(t *testing.T) {
 	require.NoError(t, h(context.Background()))
 }
 
-func TestIterationSetupCallsHook(t *testing.T) {
+func TestRunIterationSetupCallsHook(t *testing.T) {
 	t.Parallel()
 	called := false
-	err := IterationSetup(context.Background(), func(_ context.Context) error {
+	err := RunIterationSetup(context.Background(), func(_ context.Context) error {
 		called = true
 		return nil
 	})
@@ -96,17 +96,17 @@ func TestIterationSetupCallsHook(t *testing.T) {
 	assert.True(t, called)
 }
 
-func TestIterationSetupPropagatesError(t *testing.T) {
+func TestRunIterationSetupPropagatesError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("iter setup failed")
-	err := IterationSetup(context.Background(), func(_ context.Context) error { return want })
+	err := RunIterationSetup(context.Background(), func(_ context.Context) error { return want })
 	assert.ErrorIs(t, err, want)
 }
 
-func TestIterationTeardownCallsHook(t *testing.T) {
+func TestRunIterationTeardownCallsHook(t *testing.T) {
 	t.Parallel()
 	called := false
-	err := IterationTeardown(context.Background(), func(_ context.Context) error {
+	err := RunIterationTeardown(context.Background(), func(_ context.Context) error {
 		called = true
 		return nil
 	})
@@ -114,15 +114,30 @@ func TestIterationTeardownCallsHook(t *testing.T) {
 	assert.True(t, called)
 }
 
-func TestIterationTeardownPropagatesError(t *testing.T) {
+func TestRunIterationTeardownPropagatesError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("iter teardown failed")
-	err := IterationTeardown(context.Background(), func(_ context.Context) error { return want })
+	err := RunIterationTeardown(context.Background(), func(_ context.Context) error { return want })
 	assert.ErrorIs(t, err, want)
 }
 
 func TestNilIterationHookIsNoOp(t *testing.T) {
 	t.Parallel()
-	assert.NoError(t, IterationSetup(context.Background(), nil))
-	assert.NoError(t, IterationTeardown(context.Background(), nil))
+	assert.NoError(t, RunIterationSetup(context.Background(), nil))
+	assert.NoError(t, RunIterationTeardown(context.Background(), nil))
+}
+
+func TestBuildOptionsRegistersHooks(t *testing.T) {
+	t.Parallel()
+	setup := func(context.Context) error { return nil }
+	opts := BuildOptions(
+		GlobalSetup(setup),
+		GlobalTeardown(setup),
+		IterationSetup(setup),
+		IterationTeardown(setup),
+	)
+	require.NotNil(t, opts.GlobalSetup)
+	require.NotNil(t, opts.GlobalTeardown)
+	require.NotNil(t, opts.IterationSetup)
+	require.NotNil(t, opts.IterationTeardown)
 }

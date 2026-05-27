@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	testrig "github.com/smartcontractkit/testrig"
 	"github.com/smartcontractkit/testrig/internal/config"
+	"github.com/smartcontractkit/testrig/internal/hooks"
 	"github.com/smartcontractkit/testrig/internal/output"
 	"github.com/smartcontractkit/testrig/internal/runner"
 )
@@ -41,7 +41,7 @@ testrig diagnose --iterations 10 -- ./...`,
 			return err
 		}
 
-		var iterSetup, iterTeardown testrig.Hook
+		var iterSetup, iterTeardown hooks.Hook
 
 		if runnerOpts.IterationSetup != nil || conf.IterationSetup != "" {
 			iterSetup = func(ctx context.Context) error {
@@ -51,7 +51,7 @@ testrig diagnose --iterations 10 -- ./...`,
 					}
 				}
 				if conf.IterationSetup != "" {
-					return testrig.NewShellHook(conf.IterationSetup)(ctx)
+					return hooks.NewShellHook(conf.IterationSetup)(ctx)
 				}
 				return nil
 			}
@@ -61,7 +61,7 @@ testrig diagnose --iterations 10 -- ./...`,
 			iterTeardown = func(ctx context.Context) error {
 				var err error
 				if conf.IterationTeardown != "" {
-					if tdErr := testrig.NewShellHook(conf.IterationTeardown)(ctx); tdErr != nil {
+					if tdErr := hooks.NewShellHook(conf.IterationTeardown)(ctx); tdErr != nil {
 						err = errors.Join(err, tdErr)
 					}
 				}

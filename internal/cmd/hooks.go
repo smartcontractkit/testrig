@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	testrig "github.com/smartcontractkit/testrig"
+	"github.com/smartcontractkit/testrig/internal/hooks"
 )
 
 // withGlobalHooks wraps a RunE so --global-setup runs before fn and
@@ -21,14 +21,14 @@ func withGlobalHooks(fn func(*cobra.Command, []string) error) func(*cobra.Comman
 			}
 		}
 		if setup, _ := cmd.Flags().GetString("global-setup"); setup != "" {
-			if setupErr := testrig.GlobalSetup(ctx, testrig.NewShellHook(setup)); setupErr != nil {
+			if setupErr := hooks.RunGlobalSetup(ctx, hooks.NewShellHook(setup)); setupErr != nil {
 				return fmt.Errorf("global setup: %w", setupErr)
 			}
 		}
 		defer func() {
 			teardown, _ := cmd.Flags().GetString("global-teardown")
 			if teardown != "" {
-				if tdErr := testrig.GlobalTeardown(ctx, testrig.NewShellHook(teardown)); tdErr != nil {
+				if tdErr := hooks.RunGlobalTeardown(ctx, hooks.NewShellHook(teardown)); tdErr != nil {
 					err = errors.Join(err, fmt.Errorf("global teardown: %w", tdErr))
 				}
 			}

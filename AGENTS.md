@@ -16,7 +16,7 @@ go test ./...                 # Test
 - `package testrig` (root) — public library API. `Hook`, `GlobalSetup`, `GlobalTeardown`, `IterationSetup`, `IterationTeardown`, `NewShellHook`. Importable by consumers.
 - `internal/cmd/` — Cobra CLI wiring. `root.go` binds lifecycle hook flags and calls the public API.
 - `internal/runner/` — core test execution. `Diagnose` is the main entry point; `diagnoseRunHooks` carries iteration hooks as `func(context.Context) error` fields.
-- `internal/config/` — Viper + Cobra config loading. `config.App` is the unified config struct.
+- `internal/config/` — Cobra flag registry config loading. `config.App` is the unified config struct.
 - `internal/output/` — output printer abstraction. `--ai-output` flag controls format.
 - `internal/repo/` — git/module helpers.
 

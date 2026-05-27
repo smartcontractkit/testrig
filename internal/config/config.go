@@ -1,5 +1,6 @@
-// Package config holds the harness's flag-bound application config. It binds
-// Cobra flags via Viper and exposes a single App struct consumed by the runner.
+// Package config holds the harness's flag-bound application config. It reads
+// Cobra flags via a small registry and exposes a single App struct consumed by
+// the runner.
 package config
 
 import (
@@ -12,21 +13,20 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"github.com/spf13/viper"
 )
 
 // App is the flag-bound configuration shared across testrig subcommands.
 type App struct {
-	RepoRoot           string        `mapstructure:"repo_root"`
-	AIOutput           bool          `mapstructure:"ai_output"`
-	Iterations         int           `mapstructure:"iterations"`
-	ParallelIterations int           `mapstructure:"parallel_iterations"`
-	SlowThreshold      time.Duration `mapstructure:"slow_threshold"`
-	FailFast           bool          `mapstructure:"fail_fast"`
-	FailFastOn         []string      `mapstructure:"fail_fast_on"`
-	Shuffle            bool          `mapstructure:"shuffle_seed"`
-	IterationSetup     string        `mapstructure:"iteration_setup"`
-	IterationTeardown  string        `mapstructure:"iteration_teardown"`
+	RepoRoot           string
+	AIOutput           bool
+	Iterations         int
+	ParallelIterations int
+	SlowThreshold      time.Duration
+	FailFast           bool
+	FailFastOn         []string
+	Shuffle            bool
+	IterationSetup     string
+	IterationTeardown  string
 }
 
 // Valid values for --fail-fast-on.
@@ -42,6 +42,83 @@ var validFailFastOn = map[string]struct{}{
 	FailFastOnFailure: {},
 	FailFastOnTimeout: {},
 	FailFastOnSlow:    {},
+}
+
+type flagBinder func(*App, *pflag.FlagSet) error
+
+var flagRegistry = map[string]flagBinder{
+	"ai-output": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetBool("ai-output")
+		if err != nil {
+			return err
+		}
+		conf.AIOutput = v
+		return nil
+	},
+	"iteration-setup": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetString("iteration-setup")
+		if err != nil {
+			return err
+		}
+		conf.IterationSetup = v
+		return nil
+	},
+	"iteration-teardown": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetString("iteration-teardown")
+		if err != nil {
+			return err
+		}
+		conf.IterationTeardown = v
+		return nil
+	},
+	"iterations": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetInt("iterations")
+		if err != nil {
+			return err
+		}
+		conf.Iterations = v
+		return nil
+	},
+	"parallel-iterations": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetInt("parallel-iterations")
+		if err != nil {
+			return err
+		}
+		conf.ParallelIterations = v
+		return nil
+	},
+	"slow-threshold": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetDuration("slow-threshold")
+		if err != nil {
+			return err
+		}
+		conf.SlowThreshold = v
+		return nil
+	},
+	"fail-fast": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetBool("fail-fast")
+		if err != nil {
+			return err
+		}
+		conf.FailFast = v
+		return nil
+	},
+	"fail-fast-on": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetStringSlice("fail-fast-on")
+		if err != nil {
+			return err
+		}
+		conf.FailFastOn = v
+		return nil
+	},
+	"shuffle-seed": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetBool("shuffle-seed")
+		if err != nil {
+			return err
+		}
+		conf.Shuffle = v
+		return nil
+	},
 }
 
 // ValidateDiagnose checks diagnose-mode invariants on conf and normalizes
@@ -93,45 +170,41 @@ func NormalizeFailFastOn(values []string) ([]string, error) {
 	return out, nil
 }
 
-// Load binds Viper to the active command's persistent flags and local flags, then unmarshals into App.
+func defaultApp() *App {
+	conf := &App{
+		Iterations:         1,
+		ParallelIterations: 1,
+		SlowThreshold:      30 * time.Second,
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		conf.RepoRoot = cwd
+	}
+	conf.AIOutput = !term.IsTerminal(os.Stdout.Fd())
+	return conf
+}
+
+func applyFlags(cmd *cobra.Command, conf *App) error {
+	flags := cmd.Flags()
+	var errs []error
+	for name, bind := range flagRegistry {
+		if flags.Lookup(name) == nil {
+			continue
+		}
+		if err := bind(conf, flags); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Load reads the active command's flags into App.
 func Load(cmd *cobra.Command) (*App, error) {
 	if cmd == nil {
 		return nil, errors.New("command is required")
 	}
-	v := viper.New()
-
-	if cwd, err := os.Getwd(); err == nil {
-		v.SetDefault("repo_root", cwd)
-	}
-	// Enable sparse output when stdout is not a TTY (e.g. redirected or CI).
-	v.SetDefault("ai_output", !term.IsTerminal(os.Stdout.Fd()))
-	v.SetDefault("iterations", 1)
-	v.SetDefault("parallel_iterations", 1)
-	v.SetDefault("slow_threshold", 30*time.Second)
-	v.SetDefault("fail_fast", false)
-	v.SetDefault("fail_fast_on", []string{})
-
-	if err := bindPFlags(v, cmd.PersistentFlags()); err != nil {
+	conf := defaultApp()
+	if err := applyFlags(cmd, conf); err != nil {
 		return nil, err
 	}
-	if err := bindPFlags(v, cmd.Flags()); err != nil {
-		return nil, err
-	}
-
-	var conf App
-	if err := v.Unmarshal(&conf); err != nil {
-		return nil, err
-	}
-	return &conf, nil
-}
-
-func bindPFlags(v *viper.Viper, flags *pflag.FlagSet) error {
-	var errs []error
-	flags.VisitAll(func(f *pflag.Flag) {
-		configName := strings.ReplaceAll(f.Name, "-", "_")
-		if bindErr := v.BindPFlag(configName, f); bindErr != nil {
-			errs = append(errs, bindErr)
-		}
-	})
-	return errors.Join(errs...)
+	return conf, nil
 }

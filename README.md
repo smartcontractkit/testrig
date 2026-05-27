@@ -29,7 +29,7 @@ testrig diagnose --iterations 10 \
 
 ## Use Go Instead of CLI
 
-You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [example](./tools/testrig/main.go) on how.
+You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [example_test.go](./example_test.go) on how.
 
 ## Contributing
 

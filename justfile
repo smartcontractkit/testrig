@@ -44,10 +44,8 @@ lefthook:
     lefthook install
 
 # Run the in-repo testrig CLI against this repository (smoke-test diagnose).
-dogfood iterations="3":
-    go run ./cmd/testrig diagnose --iterations {{iterations}} -- ./...
+dogfood_cli iterations="3" parallel-iterations="3":
+    go run ./cmd/testrig diagnose --iterations {{iterations}} --parallel-iterations {{parallel-iterations}} -- ./...
 
-
-
-
-
+dogfood_native iterations="3" parallel-iterations="3":
+    go tool test diagnose --iterations {{iterations}} --parallel-iterations {{parallel-iterations}} -- ./...

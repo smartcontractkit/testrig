@@ -11,14 +11,14 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
-	"github.com/smartcontractkit/testrig"
+	"github.com/smartcontractkit/testrig/internal/hooks"
 )
 
-var runnerOpts testrig.RunOptions
+var runnerOpts hooks.RunOptions
 
 var rootCmd = &cobra.Command{
 	Use:   "testrig",
-	Short: "Run Go tests with a single command",
+	Short: "Run Go tests with complex setups and teardowns with a single command",
 	Long: `Run Go tests with a single command.
 
 Modes:
@@ -51,8 +51,8 @@ func init() {
 // long-running subcommands (notably `diagnose`) can stop cleanly and still write
 // their post-run analysis. A second signal hits the default handler and
 // force-exits.
-func Execute(opts ...testrig.Option) {
-	runnerOpts = testrig.BuildOptions(opts...)
+func Execute(opts ...hooks.Option) {
+	runnerOpts = hooks.BuildOptions(opts...)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	fangOpts := []fang.Option{fang.WithoutCompletions()}
 	if err := fang.Execute(ctx, rootCmd, fangOpts...); err != nil {

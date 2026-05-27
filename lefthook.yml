@@ -56,7 +56,8 @@ pre-commit:
       tags: linter
       glob: "*.go"
       root: ""
-      run: golangci-lint run --fast ./...
+      run: golangci-lint run --fast-only --fix ./...
+      stage_fixed: true
 
 pre-push:
   parallel: true

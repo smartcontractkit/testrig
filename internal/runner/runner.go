@@ -834,11 +834,6 @@ func printDiagnoseRunTimeEstimate(out *output.Printer, conf *config.App, goTestA
 		out.Stderrf("lpr_s:%d\n", sec)
 		return nil
 	}
-	est := "∞"
-	if ok {
-		est = formatDiagnoseWallClock(diag.Bound)
-	}
-	out.HumanStderr(termstyle.Muted.Render("Longest Possible Runtime: " + est))
 	return nil
 }
 
