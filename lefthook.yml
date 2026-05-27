@@ -1,3 +1,10 @@
+# Summary on success; command stdout/stderr only when a hook fails.
+# https://lefthook.dev/configuration/output
+output:
+  - summary
+  - success
+  - failure
+
 pre-commit:
   parallel: true
   commands:
@@ -31,7 +38,7 @@ pre-commit:
 
     betterleaks:
       tags: security
-      run: betterleaks git . --pre-commit --staged --redact -v
+      run: betterleaks git . --pre-commit --staged --redact
 
     codespell:
       tags: linter
