@@ -7,14 +7,12 @@ Register hooks via CLI flags (before the subcommand) or Go options in a [`tools/
 The table below is generated from [`internal/hooks/catalog.go`](./internal/hooks/catalog.go) and godoc on [`hooks.go`](./hooks.go). Run `go generate` after changes.
 
 <!-- testrig:gendocs:table -->
-
-| Option                      | When it runs                       | CLI equivalent         |
-| --------------------------- | ---------------------------------- | ---------------------- |
-| `testrig.GlobalSetup`       | Run once before any tests          | `--global-setup`       |
-| `testrig.GlobalTeardown`    | Run once after all tests finish    | `--global-teardown`    |
-| `testrig.IterationSetup`    | Run before each diagnose iteration | `--iteration-setup`    |
-| `testrig.IterationTeardown` | Run after each diagnose iteration  | `--iteration-teardown` |
-
+| Option | When it runs | CLI equivalent |
+| ------ | ------------ | -------------- |
+| `testrig.GlobalSetup` | Run once before any tests | `--global-setup` |
+| `testrig.GlobalTeardown` | Run once after all tests finish | `--global-teardown` |
+| `testrig.IterationSetup` | Run before each diagnose iteration | `--iteration-setup` |
+| `testrig.IterationTeardown` | Run after each diagnose iteration | `--iteration-teardown` |
 <!-- /testrig:gendocs:table -->
 
 ## Shell hooks

@@ -2,25 +2,31 @@
 
 A Go test harness for running your tests with universal setup and teardown, with a focus on hunting and fixing flaky tests.
 
-## Find Flaky Tests
+## Quickstart: Find Flaky Tests
 
 ```sh
 go install github.com/smartcontractkit/testrig/cmd/testrig@latest # Install
 testrig diagnose --iterations 5 -- ./... # Run your test suite 5 times and see detailed stats
 ```
 
-### Lifecycle Hooks
+### How Many `iterations` Do I Need?
 
-Run shell commands at key points in the test lifecycle. See [HOOKS.md](./HOOKS.md) for details (table is generated from [`hooks.go`](./hooks.go) via `go generate`).
+If you want to be sure that you have fixed a flaky test, or are chasing down a rare flake scenario, you'll need to re-run the test a bunch of times. The [math gets a little complicated](https://reliabilityanalyticstoolkit.appspot.com/sample_size) on exactly how many, so here's a simplified table to show you how confident you should be in your results.
 
-<!-- testrig:gendocs:table -->
-| Option | When it runs | CLI equivalent |
-| ------ | ------------ | -------------- |
-| `testrig.GlobalSetup` | Run once before any tests | `--global-setup` |
-| `testrig.GlobalTeardown` | Run once after all tests finish | `--global-teardown` |
-| `testrig.IterationSetup` | Run before each diagnose iteration | `--iteration-setup` |
-| `testrig.IterationTeardown` | Run after each diagnose iteration | `--iteration-teardown` |
-<!-- /testrig:gendocs:table -->
+| Iterations | Chance you missed a flake |
+| ---------- | ------------------------- |
+| 5          | 50%                       |
+| 30         | 10%                       |
+| 60         | 5%                        |
+| 150        | 2%                        |
+| 300        | 1%                        |
+| 500+       | < 1%                      |
+
+## Run
+
+`testrig` enables a few QoL features for running large Go test suites efficiently. You can define test lifecycle hooks, and run from the CLI, or from a lightweight Go setup.
+
+### CLI
 
 ```sh
 # Spin up dependencies before any test, tear down after
@@ -36,9 +42,24 @@ testrig diagnose --iterations 10 \
   -- ./...
 ```
 
-## Use Go Instead of CLI
+### Native Go
 
-You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [our example setup](./tools/test/README.md).
+You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [the example setup](./tools/test/README.md).
+
+### Lifecycle Hooks
+
+Run setup and teardown scripts during your test lifecycle.
+
+<!-- testrig:gendocs:table -->
+
+| Option                      | When it runs                       | CLI equivalent         |
+| --------------------------- | ---------------------------------- | ---------------------- |
+| `testrig.GlobalSetup`       | Run once before any tests          | `--global-setup`       |
+| `testrig.GlobalTeardown`    | Run once after all tests finish    | `--global-teardown`    |
+| `testrig.IterationSetup`    | Run before each diagnose iteration | `--iteration-setup`    |
+| `testrig.IterationTeardown` | Run after each diagnose iteration  | `--iteration-teardown` |
+
+<!-- /testrig:gendocs:table -->
 
 ## Contributing
 
