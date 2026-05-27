@@ -47,7 +47,7 @@ func TestBuildHooksTable(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hooks.go")
-	require.NoError(t, os.WriteFile(path, []byte(testHooksGo), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte(testHooksGo), 0o600))
 
 	table, err := buildHooksTable(path)
 	require.NoError(t, err)
@@ -73,16 +73,16 @@ func TestRun_generatesFromHooksGo(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "hooks.go"), []byte(testHooksGo), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "hooks.go"), []byte(testHooksGo), 0o600))
 
 	hooksMD := "# Hooks\n\n" + tableStart + "\n| stale |\n" + tableEnd + "\n"
-	require.NoError(t, os.WriteFile(filepath.Join(root, "HOOKS.md"), []byte(hooksMD), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "HOOKS.md"), []byte(hooksMD), 0o600))
 
 	readme := "intro\n\n" + tableStart + "\n| stale |\n" + tableEnd + "\n"
-	require.NoError(t, os.WriteFile(filepath.Join(root, "README.md"), []byte(readme), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "README.md"), []byte(readme), 0o600))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "tools/test"), 0o750))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "tools/test/README.md"), []byte(readme), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "tools/test/README.md"), []byte(readme), 0o600))
 
 	wd, err := os.Getwd()
 	require.NoError(t, err)

@@ -22,7 +22,9 @@ const (
 type Phase uint8
 
 const (
+	// PhaseSetup hooks run before the scope's work.
 	PhaseSetup Phase = iota
+	// PhaseTeardown hooks run after the scope's work.
 	PhaseTeardown
 )
 

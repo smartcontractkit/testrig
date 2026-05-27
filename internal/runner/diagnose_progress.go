@@ -175,6 +175,20 @@ func (p *parallelDiagnoseProgress) withRenderLock(fn func()) {
 	fn()
 }
 
+// diagnoseWithRenderLock serializes inline progress/digest output for parallel or serial diagnose runs.
+func diagnoseWithRenderLock(parallelProgress *parallelDiagnoseProgress, serialProgressMu *sync.Mutex, fn func()) {
+	switch {
+	case parallelProgress != nil:
+		parallelProgress.withRenderLock(fn)
+	case serialProgressMu != nil:
+		serialProgressMu.Lock()
+		fn()
+		serialProgressMu.Unlock()
+	default:
+		fn()
+	}
+}
+
 // renderSnapshot returns completed iteration count, total planned iterations,
 // per-active-iteration elapsed (sorted by iteration index), and wall time since
 // the parallel pool began.

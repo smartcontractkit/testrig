@@ -71,8 +71,8 @@ func hookRowsFromSource(hooksGoPath string) ([]hookRow, error) {
 func whenItRuns(docText string) (string, error) {
 	docText = strings.TrimSpace(docText)
 	const needle = " registers a hook to "
-	if i := strings.Index(docText, needle); i >= 0 {
-		phrase := strings.TrimSpace(docText[i+len(needle):])
+	if _, after, ok := strings.Cut(docText, needle); ok {
+		phrase := strings.TrimSpace(after)
 		phrase = strings.TrimSuffix(phrase, ".")
 		if phrase == "" {
 			return "", fmt.Errorf("empty timing phrase in %q", docText)

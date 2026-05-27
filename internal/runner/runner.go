@@ -62,15 +62,13 @@ type diagnoseRunState struct {
 	liveProgress        bool
 }
 
-// GoTest runs `go test` with the given args (repo root as working directory).
-func GoTest(ctx context.Context, conf *config.App, args []string) error {
+func runCommand(ctx context.Context, conf *config.App, binary string, args []string) error {
 	dir, args, err := resolveModuleDir(conf.RepoRoot, args)
 	if err != nil {
 		return err
 	}
-	// Binary is fixed ("go"); args are user-supplied CLI flags by design.
-	//nolint:gosec // G204: forwarded flags from CLI invocation
-	cmd := exec.CommandContext(ctx, "go", append([]string{"test"}, args...)...)
+	//nolint:gosec // G204: user-controlled args by design
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -79,23 +77,17 @@ func GoTest(ctx context.Context, conf *config.App, args []string) error {
 	return cmd.Run()
 }
 
+// GoTest runs `go test` with the given args (repo root as working directory).
+func GoTest(ctx context.Context, conf *config.App, args []string) error {
+	return runCommand(ctx, conf, "go", append([]string{"test"}, args...))
+}
+
 // Gotestsum runs `gotestsum` with the given args (repo root as working directory).
 func Gotestsum(ctx context.Context, conf *config.App, args []string) error {
 	if _, err := exec.LookPath("gotestsum"); err != nil {
 		return fmt.Errorf("gotestsum not on PATH: install with go install gotest.tools/gotestsum@latest: %w", err)
 	}
-
-	dir, args, err := resolveModuleDir(conf.RepoRoot, args)
-	if err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, "gotestsum", args...) //nolint:gosec // G204: user-controlled args by design
-	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	cmd.Env = os.Environ()
-	return cmd.Run()
+	return runCommand(ctx, conf, "gotestsum", args)
 }
 
 // Diagnose runs go test -json once per iteration, writing each stream to
@@ -188,18 +180,6 @@ func Diagnose(
 	if analyzeErr != nil {
 		out.Stderrf("analyze results: %v\n", analyzeErr)
 		return analyzeErr
-	}
-	if out.AIOutput() && state.failedFastReason == failFastReasonBuildFailure && state.failedFastIteration >= 0 {
-		var pkgs []string
-		if report != nil {
-			for _, sum := range report.IterationSummaries {
-				if sum.Index == state.failedFastIteration {
-					pkgs = append(pkgs, sum.FailingTests...)
-					break
-				}
-			}
-		}
-		out.Stderrf("bf_stop iter=%d pkgs=%s\n", state.failedFastIteration+1, strings.Join(pkgs, ","))
 	}
 	if report != nil {
 		for i, d := range state.iterDurations {
@@ -322,6 +302,85 @@ type diagnoseIterationResult struct {
 	digestErr  error
 }
 
+func setupDiagnoseLiveProgress(
+	conf *config.App,
+	out *output.Printer,
+	parallel int,
+	state *diagnoseRunState,
+) (parallelProgress *parallelDiagnoseProgress, diagnoseRunStart time.Time, progressTickDone chan struct{}, progressTickWG *sync.WaitGroup) {
+	progressTickDone = make(chan struct{})
+	progressTickWG = &sync.WaitGroup{}
+	if out.AIOutput() || !out.LiveInlineProgress() {
+		return nil, time.Time{}, progressTickDone, progressTickWG
+	}
+	state.liveProgress = true
+	if parallel <= 1 {
+		return nil, time.Now(), progressTickDone, progressTickWG
+	}
+	parallelProgress = newParallelDiagnoseProgress(conf.Iterations)
+	progressTickWG.Go(func() {
+		tick := time.NewTicker(250 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-progressTickDone:
+				return
+			case <-tick.C:
+				parallelProgress.withRenderLock(func() {
+					renderParallelDiagnoseProgressLine(
+						out.HumanStderrWriter(),
+						parallelProgress,
+						time.Now(),
+						true,
+					)
+				})
+			}
+		}
+	})
+	return parallelProgress, time.Time{}, progressTickDone, progressTickWG
+}
+
+func recordDiagnoseIterationResult(
+	state *diagnoseRunState,
+	result diagnoseIterationResult,
+	conf *config.App,
+	out *output.Printer,
+	parallelProgress *parallelDiagnoseProgress,
+	serialProgressMu *sync.Mutex,
+) {
+	state.completed++
+	state.iterDurations[result.iteration] = result.duration
+	if state.shuffleSeeds != nil {
+		state.shuffleSeeds[result.iteration] = result.shuffle
+	}
+	diagnoseWithRenderLock(parallelProgress, serialProgressMu, func() {
+		if parallelProgress != nil || serialProgressMu != nil {
+			out.ClearInline()
+		}
+		printDiagnoseIterationDigest(
+			out,
+			result.iteration,
+			conf.Iterations,
+			result.digest,
+			result.digestErr,
+			result.duration,
+		)
+	})
+	if result.dumpErr != nil && !out.AIOutput() {
+		out.Stderrf("diagnostics dump iteration %d: %v\n", result.iteration, result.dumpErr)
+	}
+	if !result.failedFast {
+		return
+	}
+	state.failedFast = true
+	if state.failedFastReason == "" {
+		state.failedFastReason = result.failReason
+	}
+	if state.failedFastIteration < 0 {
+		state.failedFastIteration = result.iteration
+	}
+}
+
 func runDiagnoseIterations(
 	ctx context.Context,
 	conf *config.App,
@@ -362,37 +421,12 @@ func runDiagnoseIterations(
 
 	jobs := make(chan int)
 	results := make(chan diagnoseIterationResult)
-	var parallelProgress *parallelDiagnoseProgress
-	var diagnoseRunStart time.Time
-	var progressTickWG sync.WaitGroup
-	progressTickDone := make(chan struct{})
-	if !out.AIOutput() && out.LiveInlineProgress() {
-		state.liveProgress = true
-		if parallel > 1 {
-			parallelProgress = newParallelDiagnoseProgress(conf.Iterations)
-			progressTickWG.Go(func() {
-				tick := time.NewTicker(250 * time.Millisecond)
-				defer tick.Stop()
-				for {
-					select {
-					case <-progressTickDone:
-						return
-					case <-tick.C:
-						parallelProgress.withRenderLock(func() {
-							renderParallelDiagnoseProgressLine(
-								out.HumanStderrWriter(),
-								parallelProgress,
-								time.Now(),
-								true,
-							)
-						})
-					}
-				}
-			})
-		} else {
-			diagnoseRunStart = time.Now()
-		}
-	}
+	parallelProgress, diagnoseRunStart, progressTickDone, progressTickWG := setupDiagnoseLiveProgress(
+		conf,
+		out,
+		parallel,
+		&state,
+	)
 	defer func() {
 		close(progressTickDone)
 		progressTickWG.Wait()
@@ -449,62 +483,7 @@ func runDiagnoseIterations(
 			}
 			continue
 		}
-		state.completed++
-		state.iterDurations[result.iteration] = result.duration
-		if state.shuffleSeeds != nil {
-			state.shuffleSeeds[result.iteration] = result.shuffle
-		}
-		if parallelProgress != nil {
-			parallelProgress.withRenderLock(func() {
-				out.ClearInline()
-				printDiagnoseIterationDigest(
-					out,
-					result.iteration,
-					conf.Iterations,
-					result.digest,
-					result.digestErr,
-					result.duration,
-				)
-			})
-		} else {
-			// Serial TTY: worker may redraw the next iteration's \r line before this
-			// loop runs. Hold the same lock as redraw so ClearInline+Fprintln is not
-			// interleaved with another progress draw (which would leave the cursor at EOL).
-			if serialProgressMu != nil {
-				serialProgressMu.Lock()
-				out.ClearInline()
-				printDiagnoseIterationDigest(
-					out,
-					result.iteration,
-					conf.Iterations,
-					result.digest,
-					result.digestErr,
-					result.duration,
-				)
-				serialProgressMu.Unlock()
-			} else {
-				printDiagnoseIterationDigest(
-					out,
-					result.iteration,
-					conf.Iterations,
-					result.digest,
-					result.digestErr,
-					result.duration,
-				)
-			}
-		}
-		if result.dumpErr != nil && !out.AIOutput() {
-			out.Stderrf("diagnostics dump iteration %d: %v\n", result.iteration, result.dumpErr)
-		}
-		if result.failedFast {
-			state.failedFast = true
-			if state.failedFastReason == "" {
-				state.failedFastReason = result.failReason
-			}
-			if state.failedFastIteration < 0 {
-				state.failedFastIteration = result.iteration
-			}
-		}
+		recordDiagnoseIterationResult(&state, result, conf, out, parallelProgress, serialProgressMu)
 	}
 	return state, firstErr
 }

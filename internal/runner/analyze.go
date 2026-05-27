@@ -157,6 +157,49 @@ type Report struct {
 	Slow               []TestEntry        `json:"slow,omitempty"`
 }
 
+// TestGroup defines a category of flagged tests within a Report,
+// exposing references for mutation and metadata for presentation.
+type TestGroup struct {
+	Entries     *[]TestEntry
+	LogKind     string
+	CSVCategory string
+	Iters       func(TestEntry) []int
+}
+
+// TestGroups returns all flagged test categories in precedence order
+// (Timeout > Failure > Flake > Slow) for deduplication and output generation.
+func (rep *Report) TestGroups() []TestGroup {
+	if rep == nil {
+		return nil
+	}
+	return []TestGroup{
+		{
+			Entries:     &rep.Timeouts,
+			LogKind:     "timeout",
+			CSVCategory: "timeout",
+			Iters:       func(e TestEntry) []int { return e.TimeoutIters },
+		},
+		{
+			Entries:     &rep.Failures,
+			LogKind:     "fail",
+			CSVCategory: "failure",
+			Iters:       func(e TestEntry) []int { return e.FailIters },
+		},
+		{
+			Entries:     &rep.Flakes,
+			LogKind:     "fail",
+			CSVCategory: "flake",
+			Iters:       func(e TestEntry) []int { return e.FailIters },
+		},
+		{
+			Entries:     &rep.Slow,
+			LogKind:     "slow",
+			CSVCategory: "slow",
+			Iters:       func(e TestEntry) []int { return e.SlowIters },
+		},
+	}
+}
+
 // LogMap maps (package,test) → iteration → raw interleaved output.
 // Returned alongside Report so callers can write per-test log files without
 // coupling the parser to the filesystem.
@@ -583,24 +626,14 @@ func WriteLogFiles(resultsDir string, rep *Report, logs LogMap) error {
 	if err := os.MkdirAll(logsDir, 0700); err != nil {
 		return err
 	}
-	groups := []struct {
-		entries *[]TestEntry
-		kind    string
-		iters   func(TestEntry) []int
-	}{
-		{entries: &rep.Flakes, kind: "fail", iters: func(e TestEntry) []int { return e.FailIters }},
-		{entries: &rep.Failures, kind: "fail", iters: func(e TestEntry) []int { return e.FailIters }},
-		{entries: &rep.Timeouts, kind: "timeout", iters: func(e TestEntry) []int { return e.TimeoutIters }},
-		{entries: &rep.Slow, kind: "slow", iters: func(e TestEntry) []int { return e.SlowIters }},
-	}
-	for _, group := range groups {
-		for ei, entry := range *group.entries {
+	for _, group := range rep.TestGroups() {
+		for ei, entry := range *group.Entries {
 			key := testKey{Package: entry.Package, Test: entry.Test}
 			m, ok := logs[key]
 			if !ok || len(m) == 0 {
 				continue
 			}
-			iterations := group.iters(entry)
+			iterations := group.Iters(entry)
 			budgetIteration := longestIterationString(iterations)
 			written := make([]int, 0, len(iterations))
 			for _, it := range iterations {
@@ -621,8 +654,8 @@ func WriteLogFiles(resultsDir string, rep *Report, logs LogMap) error {
 				written = append(written, it)
 			}
 			if len(written) > 0 {
-				(*group.entries)[ei].Logs = append((*group.entries)[ei].Logs, ProblemLog{
-					Type:  group.kind,
+				(*group.Entries)[ei].Logs = append((*group.Entries)[ei].Logs, ProblemLog{
+					Type:  group.LogKind,
 					Iters: compactIterations(written),
 					Path: filepath.Join(
 						"logs",
@@ -758,8 +791,9 @@ func (r csvRow) record() []string {
 func flaggedRows(rep *Report) []csvRow {
 	seen := map[testKey]struct{}{}
 	var rows []csvRow
-	add := func(entries []TestEntry, cat string) {
-		for _, e := range entries {
+
+	for _, group := range rep.TestGroups() {
+		for _, e := range *group.Entries {
 			k := testKey{Package: e.Package, Test: e.Test}
 			if _, ok := seen[k]; ok {
 				continue
@@ -768,7 +802,7 @@ func flaggedRows(rep *Report) []csvRow {
 			rows = append(rows, csvRow{
 				Package:   e.Package,
 				Test:      e.Test,
-				Category:  cat,
+				Category:  group.CSVCategory,
 				Runs:      e.Runs,
 				Successes: e.Successes,
 				Fails:     e.Fails,
@@ -780,11 +814,6 @@ func flaggedRows(rep *Report) []csvRow {
 			})
 		}
 	}
-	// Order matters: first category wins on dup.
-	add(rep.Timeouts, "timeout")
-	add(rep.Failures, "failure")
-	add(rep.Flakes, "flake")
-	add(rep.Slow, "slow")
 
 	sort.SliceStable(rows, func(i, j int) bool {
 		li := rows[i].Timeouts + rows[i].Fails
