@@ -44,7 +44,7 @@ testrig diagnose --iterations 10 \
 
 ### Native Go
 
-You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [the examples folder](./examples).
+You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [the pkg.go.dev docs](https://pkg.go.dev/github.com/smartcontractkit/testrig#pkg-examples) for an example setup.
 
 ### Lifecycle Hooks
 
