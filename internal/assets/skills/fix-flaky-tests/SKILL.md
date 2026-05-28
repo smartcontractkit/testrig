@@ -20,6 +20,7 @@ description: >-
 Package patterns after `--` are resolved against the monorepo `repo_root` (and may be rewritten when targeting a nested `go.mod`), not your shell cwd. Prefer `./core/...` / `./deployment/...`, not `../../...` from `tools/test/`.
 
 - ALWAYS use `--ai-output` before the `--`.
+- Final stdout line is JSON with `"event":"complete"` (report path, summary, capped findings). Read `report.json` in the results directory for full detail.
 - Harness flags (before `--`): `--iterations N`, `--fail-fast-on=(timeout|slow)`, `--parallel-iterations N`
 - Go test flags (after `--`): `--run '^TestName$'`, `--timeout 10m`, `--race`
 - Help: `go -C tools/test run . diagnose -h`

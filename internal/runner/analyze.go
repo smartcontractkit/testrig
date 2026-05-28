@@ -155,6 +155,7 @@ type Report struct {
 	Failures           []TestEntry        `json:"failures,omitempty"`
 	Timeouts           []TestEntry        `json:"timeouts,omitempty"`
 	Slow               []TestEntry        `json:"slow,omitempty"`
+	SlowestPackages    []TestEntry        `json:"slowest_packages,omitempty"`
 }
 
 // TestGroup defines a category of flagged tests within a Report,
@@ -363,39 +364,30 @@ func buildReportFromAggs(
 		}
 	}
 
-	// Always include top 10 slowest packages, plus any package that has slow tests.
-	slices.SortFunc(pkgEntries, func(a, b TestEntry) int {
-		return cmp.Or(
-			cmp.Compare(b.MaxElapsed, a.MaxElapsed),
-			strings.Compare(a.Package, b.Package),
-		)
-	})
+	pkgNames := make([]string, 0, len(testsByPkg))
+	for pkgName := range testsByPkg {
+		pkgNames = append(pkgNames, pkgName)
+	}
+	sort.Strings(pkgNames)
+	for _, pkgName := range pkgNames {
+		rep.Slow = append(rep.Slow, testsByPkg[pkgName]...)
+	}
 
-	slowMerged := make(map[string]bool)
-	seenPkg := make(map[string]bool)
-	for i, pkg := range pkgEntries {
-		if i < 10 && !pkgAggregateExcludedFromSlowReports(pkg) {
-			rep.Slow = append(rep.Slow, pkg)
-			seenPkg[pkg.Package] = true
-		}
-		if slowTests, ok := testsByPkg[pkg.Package]; ok {
-			rep.Slow = append(rep.Slow, slowTests...)
-			slowMerged[pkg.Package] = true
-			if !seenPkg[pkg.Package] && !pkgAggregateExcludedFromSlowReports(pkg) {
-				rep.Slow = append(rep.Slow, pkg)
-				seenPkg[pkg.Package] = true
+	if slowThreshold > 0 {
+		slices.SortFunc(pkgEntries, func(a, b TestEntry) int {
+			return cmp.Or(
+				cmp.Compare(b.MaxElapsed, a.MaxElapsed),
+				strings.Compare(a.Package, b.Package),
+			)
+		})
+		for _, pkg := range pkgEntries {
+			if pkg.MaxElapsed >= slowThreshold && !pkgAggregateExcludedFromSlowReports(pkg) {
+				rep.SlowestPackages = append(rep.SlowestPackages, pkg)
+				if len(rep.SlowestPackages) >= 10 {
+					break
+				}
 			}
 		}
-	}
-	var orphanSlowPkgs []string
-	for pkgName := range testsByPkg {
-		if !slowMerged[pkgName] {
-			orphanSlowPkgs = append(orphanSlowPkgs, pkgName)
-		}
-	}
-	sort.Strings(orphanSlowPkgs)
-	for _, pkgName := range orphanSlowPkgs {
-		rep.Slow = append(rep.Slow, testsByPkg[pkgName]...)
 	}
 
 	sortEntries(rep.Flakes)
@@ -480,12 +472,7 @@ func buildReportSummary(rep *Report, aggs map[testKey]*aggregate, slowThreshold 
 			iterWithFlakeFail[i] = struct{}{}
 		}
 	}
-	slowCount := 0
-	for _, e := range rep.Slow {
-		if e.Test != "" {
-			slowCount++
-		}
-	}
+	slowCount := len(rep.Slow)
 
 	s := &ReportSummary{
 		DistinctNamedTests: distinct,
@@ -527,8 +514,9 @@ type IterationDigest struct {
 	Result       string // pass, fail, timeout
 	RanTests     int    // distinct named tests (package.test) that completed in this iteration
 	FailTests    int    // len(IterationSummaries[0].FailingTests)
-	SlowTests    int    // tests over slow threshold
 	TimeoutTests int    // len(Timeouts) for this iteration
+	SkipTests    int    // distinct named tests skipped in this iteration
+	SlowTests    int    // tests over slow threshold
 	BuildFailure bool   // compile/build failed or heuristic package-level fail with no named tests run
 }
 
@@ -541,6 +529,19 @@ func countNamedTestsRanInAggs(aggs map[testKey]*aggregate) int {
 			continue
 		}
 		if len(a.iterations) > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+func countNamedTestsSkippedInAggs(aggs map[testKey]*aggregate) int {
+	n := 0
+	for k, a := range aggs {
+		if k.Test == "" {
+			continue
+		}
+		if len(a.skipIters) > 0 {
 			n++
 		}
 	}
@@ -560,6 +561,7 @@ func DigestIterationJSONL(r io.Reader, slowThreshold time.Duration) (IterationDi
 	rep, _ := buildReportFromAggs(aggs, 1, slowThreshold)
 	d := iterationDigestFromReport(rep)
 	d.RanTests = ran
+	d.SkipTests = countNamedTestsSkippedInAggs(aggs)
 	d.BuildFailure = meta.sawFailedBuild ||
 		(d.Result == "fail" && d.RanTests == 0 && d.FailTests > 0)
 	return d, nil
@@ -570,10 +572,14 @@ func iterationDigestFromReport(rep *Report) IterationDigest {
 		return IterationDigest{Result: "pass"}
 	}
 	s := rep.IterationSummaries[0]
+	slowTests := 0
+	if rep.Summary != nil {
+		slowTests = rep.Summary.SlowCount
+	}
 	return IterationDigest{
 		Result:       s.Result,
 		FailTests:    len(s.FailingTests),
-		SlowTests:    len(rep.Slow),
+		SlowTests:    slowTests,
 		TimeoutTests: len(rep.Timeouts),
 	}
 }
@@ -829,10 +835,8 @@ func flaggedRows(rep *Report) []csvRow {
 	return rows
 }
 
-// PrintSummary writes a human-readable summary: headings and tests grouped by
-// package under a common path prefix (tree). Broken/Flaky/Slow test lines use
-// red / yellow / grey; package path rows are muted. The Overall block uses green
-// when a metric is clean, orange for slow prevalence, and red for broken or flaky counts.
+// PrintSummary writes a human-readable diagnose summary: scope line and rates
+// table first, then detail sections (Broken, Flaky, Timeout, Slow) as flat lines.
 // Broken and Timeout entries are sorted alphabetically by package then test.
 // Flaky entries are sorted by fails/runs (desc), then fails (desc), then name.
 // Slow entries are sorted by max runtime (desc), then name.
@@ -840,6 +844,8 @@ func PrintSummary(w io.Writer, rep *Report) {
 	if rep == nil {
 		return
 	}
+
+	printOverallStats(w, rep)
 
 	if n := len(rep.Failures); n > 0 {
 		fails := append([]TestEntry(nil), rep.Failures...)
@@ -849,7 +855,7 @@ func PrintSummary(w io.Writer, rep *Report) {
 			}
 			return fails[i].Test < fails[j].Test
 		})
-		printSummarySectionTree(w, "Broken", n, fails, termstyle.Bad, termstyle.Bad, formatBrokenTestLine)
+		printSummarySectionFlat(w, "Broken", n, fails, termstyle.Bad, termstyle.Bad, formatBrokenStats)
 	}
 
 	if n := len(rep.Flakes); n > 0 {
@@ -865,7 +871,7 @@ func PrintSummary(w io.Writer, rep *Report) {
 			}
 			return entryFQName(flakes[i]) < entryFQName(flakes[j])
 		})
-		printSummarySectionTree(w, "Flaky", n, flakes, termstyle.Flaky, termstyle.Flaky, formatFlakyTestLine)
+		printSummarySectionFlat(w, "Flaky", n, flakes, termstyle.Flaky, termstyle.Flaky, formatFlakyStats)
 	}
 
 	if n := len(rep.Timeouts); n > 0 {
@@ -876,7 +882,7 @@ func PrintSummary(w io.Writer, rep *Report) {
 			}
 			return touts[i].Test < touts[j].Test
 		})
-		printSummarySectionTree(w, "Timeout", n, touts, termstyle.Accent, termstyle.Accent, formatTimeoutTestLine)
+		printSummarySectionFlat(w, "Timeout", n, touts, termstyle.Accent, termstyle.Accent, formatTimeoutStats)
 	}
 
 	if n := len(rep.Slow); n > 0 {
@@ -890,108 +896,105 @@ func PrintSummary(w io.Writer, rep *Report) {
 			}
 			return slow[i].Test < slow[j].Test
 		})
-		printSummarySectionTree(
-			w,
-			"Slow Tests & Top Packages",
-			n,
-			slow,
-			termstyle.Muted,
-			termstyle.Muted,
-			formatSlowTestLine,
-		)
+		printSummarySectionFlat(w, "Slow", n, slow, termstyle.Accent, termstyle.Accent, formatSlowStats)
 	}
 
-	printOverallStats(w, rep)
+	if n := len(rep.SlowestPackages); n > 0 {
+		pkgs := append([]TestEntry(nil), rep.SlowestPackages...)
+		printSummarySectionFlat(w, "Slowest Packages", n, pkgs, termstyle.Muted, termstyle.Muted, formatSlowStats)
+	}
 }
 
 func printOverallStats(w io.Writer, rep *Report) {
-	if rep == nil || rep.Summary == nil {
+	if rep == nil {
 		return
 	}
+	hasFindings := len(rep.Failures) > 0 || len(rep.Flakes) > 0 || len(rep.Timeouts) > 0 ||
+		len(rep.Slow) > 0 || len(rep.SlowestPackages) > 0
 	s := rep.Summary
-	hasIterRuntime := s.IterationDurationMin > 0 || s.IterationDurationP50 > 0 || s.IterationDurationMax > 0
-	if s.DistinctNamedTests == 0 && s.FlakeTotalRuns == 0 && !hasIterRuntime {
+	hasIterRuntime := s != nil &&
+		(s.IterationDurationMin > 0 || s.IterationDurationP50 > 0 || s.IterationDurationMax > 0)
+	hasSummaryStats := s != nil && (s.DistinctNamedTests > 0 || s.FlakeTotalRuns > 0 || hasIterRuntime)
+	if !hasFindings && !hasSummaryStats {
 		return
 	}
 
-	_, _ = fmt.Fprintln(w, termstyle.Label.Render("Overall"))
-	if hasIterRuntime {
-		line := fmt.Sprintf("  Iteration runtimes: min=%s p50=%s max=%s",
-			s.IterationDurationMin.Round(time.Millisecond),
-			s.IterationDurationP50.Round(time.Millisecond),
-			s.IterationDurationMax.Round(time.Millisecond))
-		_, _ = fmt.Fprintln(w, termstyle.Muted.Render(line))
+	printOverallScope(w, rep)
+	if s == nil {
+		_, _ = fmt.Fprintln(w)
+		return
 	}
-	if s.DistinctNamedTests > 0 {
-		brokenN := 0
-		for _, f := range rep.Failures {
-			if f.Test != "" {
-				brokenN++
-			}
-		}
-		pctBroken := float64(brokenN) / float64(s.DistinctNamedTests) * 100
-		line := fmt.Sprintf("  Broken: %d/%d (%.1f%%)", brokenN, s.DistinctNamedTests, pctBroken)
-		if brokenN > 0 {
-			_, _ = fmt.Fprintln(w, termstyle.Bad.Render(line))
-		} else {
-			_, _ = fmt.Fprintln(w, termstyle.OK.Render(line))
-		}
+	printOverallRatesTable(w, rep)
+	_, _ = fmt.Fprintln(w)
+}
 
-		pct := 0.0
-		if s.FlakePrevalence != nil {
-			pct = *s.FlakePrevalence * 100
-		}
-		line = fmt.Sprintf("  Flaky: %d/%d (%.1f%%)", s.FlakeNamedCount, s.DistinctNamedTests, pct)
-		if s.FlakeNamedCount > 0 {
-			_, _ = fmt.Fprintln(w, termstyle.Bad.Render(line))
-		} else {
-			_, _ = fmt.Fprintln(w, termstyle.OK.Render(line))
+func overallFlakyIterationCI(s *ReportSummary) string {
+	if s == nil || s.FlakeIterationFailRateLower == nil || s.FlakeIterationFailRateUpper == nil {
+		return ""
+	}
+	gap := *s.FlakeIterationFailRateUpper - *s.FlakeIterationFailRateLower
+	ciText := fmt.Sprintf(
+		"CI %.1f%%–%.1f%%",
+		*s.FlakeIterationFailRateLower*100,
+		*s.FlakeIterationFailRateUpper*100,
+	)
+	return ciStyleForGap(gap).Render(ciText)
+}
+
+func slowPackageCount(rep *Report) int {
+	if rep == nil {
+		return 0
+	}
+	return len(rep.SlowestPackages)
+}
+
+func countBrokenNamedTests(rep *Report) int {
+	if rep == nil {
+		return 0
+	}
+	n := 0
+	for _, f := range rep.Failures {
+		if f.Test != "" {
+			n++
 		}
 	}
-	if s.FlakeIterationTotal > 0 && s.FlakeIterationFailRate != nil {
-		pct := *s.FlakeIterationFailRate * 100
-		ci := ""
-		if s.FlakeIterationFailRateLower != nil && s.FlakeIterationFailRateUpper != nil {
-			ciText := fmt.Sprintf(
-				" [Confidence Interval: %.1f%%–%.1f%%]",
-				*s.FlakeIterationFailRateLower*100,
-				*s.FlakeIterationFailRateUpper*100,
-			)
-			ci = ciStyleForGap(*s.FlakeIterationFailRateUpper - *s.FlakeIterationFailRateLower).Render(ciText)
-		}
-		line := fmt.Sprintf(
-			"  Flaky Iterations: %d/%d (%.1f%%)%s",
-			s.FlakeFailingIterations,
-			s.FlakeIterationTotal,
-			pct,
-			ci,
-		)
-		if s.FlakeFailingIterations > 0 {
-			_, _ = fmt.Fprintln(w, termstyle.Bad.Render(line))
-		} else {
-			_, _ = fmt.Fprintln(w, termstyle.OK.Render(line))
-		}
-	}
-	if rep.SlowThreshold > 0 && s.DistinctNamedTests > 0 && s.SlowPrevalence != nil {
-		pct := *s.SlowPrevalence * 100
-		line := fmt.Sprintf("  Slow: %d/%d (%.1f%%)", s.SlowCount, s.DistinctNamedTests, pct)
-		if s.SlowCount > 0 {
-			_, _ = fmt.Fprintln(w, termstyle.Accent.Render(line))
-		} else {
-			_, _ = fmt.Fprintln(w, termstyle.OK.Render(line))
-		}
+	return n
+}
+
+func printSummarySectionFlat(
+	w io.Writer,
+	title string,
+	n int,
+	entries []TestEntry,
+	headingStyle, lineStyle lipgloss.Style,
+	statsFor func(TestEntry) string,
+) {
+	_, _ = fmt.Fprintln(w, headingStyle.Render(fmt.Sprintf("%s (%d)", title, n)))
+	for _, e := range entries {
+		_, _ = fmt.Fprintln(w, lineStyle.Render(formatSummaryFlatLine(e, statsFor)))
 	}
 	_, _ = fmt.Fprintln(w)
 }
 
-func formatBrokenTestLine(e TestEntry) string {
+func formatSummaryFlatLine(e TestEntry, statsFor func(TestEntry) string) string {
+	stats := statsFor(e)
 	if e.Test == "" {
-		return e.Package
+		if stats == "" {
+			return e.Package
+		}
+		return e.Package + "  " + stats
 	}
-	return e.Test
+	if stats == "" {
+		return e.Package + "  " + e.Test
+	}
+	return e.Package + "  " + e.Test + "  " + stats
 }
 
-func formatFlakyTestLine(e TestEntry) string {
+func formatBrokenStats(TestEntry) string { return "" }
+
+func formatTimeoutStats(TestEntry) string { return "" }
+
+func formatFlakyStats(e TestEntry) string {
 	runs := e.Runs
 	if runs < 1 {
 		runs = e.Successes + e.Fails
@@ -1003,143 +1006,11 @@ func formatFlakyTestLine(e TestEntry) string {
 	lo, hi := WilsonScoreInterval(e.Fails, runs, 0)
 	ciText := fmt.Sprintf(" [Confidence Interval: %.1f%%–%.1f%%]", lo*100, hi*100)
 	ci := ciStyleForGap(hi - lo).Render(ciText)
-	if e.Test == "" {
-		return fmt.Sprintf("%s (%d/%d) %.1f%%%s", e.Package, e.Fails, runs, pct, ci)
-	}
-	return fmt.Sprintf("%s (%d/%d) %.1f%%%s", e.Test, e.Fails, runs, pct, ci)
+	return fmt.Sprintf("(%d/%d) %.1f%%%s", e.Fails, runs, pct, ci)
 }
 
-func formatTimeoutTestLine(e TestEntry) string {
-	if e.Test == "" {
-		return e.Package
-	}
-	return e.Test
-}
-
-func formatSlowTestLine(e TestEntry) string {
-	dur := termstyle.Accent.Render(e.MaxElapsed.Round(time.Millisecond).String())
-	if e.Test == "" {
-		return fmt.Sprintf("%s %s", e.Package, dur)
-	}
-	return fmt.Sprintf("%s %s", e.Test, dur)
-}
-
-// pipeBranch returns a tree prefix: depth 1 -> "|-- ", depth 2 -> "|---- ", etc.
-func pipeBranch(depth int) string {
-	if depth < 1 {
-		return ""
-	}
-	return "|" + strings.Repeat("-", 2*depth) + " "
-}
-
-// longestCommonPathPrefix returns the longest shared prefix ending at a '/'
-// so grouped packages can share one root line. Empty if no '/' in common.
-func longestCommonPathPrefix(paths []string) string {
-	if len(paths) == 0 {
-		return ""
-	}
-	p := append([]string(nil), paths...)
-	sort.Strings(p)
-	first, last := p[0], p[len(p)-1]
-	cmpLen := min(len(last), len(first))
-	i := 0
-	for i < cmpLen && first[i] == last[i] {
-		i++
-	}
-	common := first[:i]
-	if j := strings.LastIndex(common, "/"); j >= 0 {
-		return common[:j+1]
-	}
-	return ""
-}
-
-func printSummarySectionTree(
-	w io.Writer,
-	title string,
-	n int,
-	entries []TestEntry,
-	headingStyle, testStyle lipgloss.Style,
-	formatTest func(TestEntry) string,
-) {
-	_, _ = fmt.Fprintln(w, headingStyle.Render(fmt.Sprintf("%s (%d)", title, n)))
-
-	byPkg := make(map[string][]TestEntry)
-	var pkgs []string
-	seen := map[string]struct{}{}
-	for _, e := range entries {
-		if _, ok := seen[e.Package]; !ok {
-			seen[e.Package] = struct{}{}
-			pkgs = append(pkgs, e.Package)
-		}
-		byPkg[e.Package] = append(byPkg[e.Package], e)
-	}
-	sort.Strings(pkgs)
-	for _, pkg := range pkgs {
-		sort.Slice(byPkg[pkg], func(i, j int) bool { return byPkg[pkg][i].Test < byPkg[pkg][j].Test })
-	}
-
-	lcp := longestCommonPathPrefix(pkgs)
-	if lcp == "" && len(pkgs) > 0 {
-		lcp = pkgs[0]
-		if j := strings.LastIndex(lcp, "/"); j >= 0 {
-			lcp = lcp[:j+1]
-		} else {
-			lcp = ""
-		}
-	}
-
-	if lcp != "" {
-		_, _ = fmt.Fprintln(w, termstyle.Muted.Render("- "+lcp))
-	}
-
-	for _, pkg := range pkgs {
-		suffix := strings.TrimPrefix(pkg, lcp)
-		suffix = strings.TrimPrefix(suffix, "/")
-		segments := strings.Split(suffix, "/")
-		var nonEmpty []string
-		for _, s := range segments {
-			if s != "" {
-				nonEmpty = append(nonEmpty, s)
-			}
-		}
-		depth := 0
-		for _, seg := range nonEmpty {
-			depth++
-			line := pipeBranch(depth) + seg + "/"
-			if depth == len(nonEmpty) {
-				if pkgEntry, ok := packageLevelEntry(byPkg[pkg]); ok {
-					line += " " + formatPackageLevelSummary(pkgEntry, seg, formatTest)
-				}
-			}
-			_, _ = fmt.Fprintln(w, termstyle.Muted.Render(line))
-		}
-		testDepth := len(nonEmpty) + 1
-		if len(nonEmpty) == 0 {
-			testDepth = 1
-		}
-		for _, e := range byPkg[pkg] {
-			if e.Test == "" {
-				continue
-			}
-			line := pipeBranch(testDepth) + formatTest(e)
-			_, _ = fmt.Fprintln(w, testStyle.Render(line))
-		}
-	}
-	_, _ = fmt.Fprintln(w)
-}
-
-func packageLevelEntry(entries []TestEntry) (TestEntry, bool) {
-	for _, e := range entries {
-		if e.Test == "" {
-			return e, true
-		}
-	}
-	return TestEntry{}, false
-}
-
-func formatPackageLevelSummary(e TestEntry, pkgName string, formatTest func(TestEntry) string) string {
-	e.Test = pkgName
-	return strings.TrimPrefix(formatTest(e), pkgName+" ")
+func formatSlowStats(e TestEntry) string {
+	return termstyle.Accent.Render(e.MaxElapsed.Round(time.Millisecond).String())
 }
 
 func entryFQName(e TestEntry) string {
@@ -1283,7 +1154,7 @@ func sortedBoolMapKeys(m map[int]bool) []int {
 }
 
 // pkgAggregateExcludedFromSlowReports is true for package-level aggregates that
-// belong only in Failures or Timeouts, not in rep.Slow package ranking.
+// belong only in Failures or Timeouts, not in rep.SlowestPackages ranking.
 func pkgAggregateExcludedFromSlowReports(e TestEntry) bool {
 	if e.Test != "" {
 		return false

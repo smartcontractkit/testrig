@@ -44,19 +44,21 @@ testrig diagnose --iterations 10 \
 
 ### Native Go
 
-You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [the example setup](./tools/test/README.md).
+You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [the examples folder](./examples).
 
 ### Lifecycle Hooks
 
 Run setup and teardown scripts during your test lifecycle.
 
 <!-- testrig:gendocs:table -->
-| Option | When it runs | CLI equivalent |
-| ------ | ------------ | -------------- |
-| `testrig.GlobalSetup` | Run once before any tests | `--global-setup` |
-| `testrig.GlobalTeardown` | Run once after all tests finish | `--global-teardown` |
-| `testrig.IterationSetup` | Run before each diagnose iteration | `--iteration-setup` |
-| `testrig.IterationTeardown` | Run after each diagnose iteration | `--iteration-teardown` |
+
+| Option                      | When it runs                       | CLI equivalent         |
+| --------------------------- | ---------------------------------- | ---------------------- |
+| `testrig.GlobalSetup`       | Run once before any tests          | `--global-setup`       |
+| `testrig.GlobalTeardown`    | Run once after all tests finish    | `--global-teardown`    |
+| `testrig.IterationSetup`    | Run before each diagnose iteration | `--iteration-setup`    |
+| `testrig.IterationTeardown` | Run after each diagnose iteration  | `--iteration-teardown` |
+
 <!-- /testrig:gendocs:table -->
 
 ## Contributing

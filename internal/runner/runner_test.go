@@ -69,7 +69,7 @@ func TestDiagnoseCanceledCtxRunsNoIterationsButStillWritesReport(t *testing.T) {
 	require.NotNil(t, rep.Run.FinishedAt)
 }
 
-func TestDiagnoseCanceledCtxAIStdoutTwoLines(t *testing.T) {
+func TestDiagnoseCanceledCtxAIStdoutCompleteEvent(t *testing.T) {
 	t.Parallel()
 	repoRoot := t.TempDir()
 	conf := &config.App{
@@ -92,9 +92,14 @@ func TestDiagnoseCanceledCtxAIStdoutTwoLines(t *testing.T) {
 	require.NoError(t, err)
 
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-	require.Len(t, lines, 3, "stdout: %q", stdout.String())
-	assert.Equal(t, filepath.Join(lines[0], "report.json"), lines[1])
-	assert.Equal(t, "null", lines[2])
+	require.Len(t, lines, 2, "stdout: %q", stdout.String())
+	assert.DirExists(t, lines[0])
+
+	var ev aiDiagnoseComplete
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &ev))
+	assert.Equal(t, "complete", ev.Event)
+	assert.Equal(t, lines[0], ev.Results)
+	assert.Equal(t, filepath.Join(lines[0], "report.json"), ev.Report)
 }
 
 func TestDiagnoseHumanModeFooterShowsReportJSONPath(t *testing.T) {
@@ -118,10 +123,11 @@ func TestDiagnoseHumanModeFooterShowsReportJSONPath(t *testing.T) {
 	reportPath := filepath.Join(matches[0], "report.json")
 
 	out := stderr.String()
-	assert.Contains(t, out, "results directory")
+	assert.NotContains(t, out, "results directory")
 	assert.Contains(t, out, matches[0])
 	assert.Contains(t, out, reportPath)
-	assert.Contains(t, out, "report.json:")
+	assert.Contains(t, out, "Path")
+	assert.NotContains(t, out, "report.json:")
 	assert.NotContains(t, out, "results in ")
 }
 
@@ -133,10 +139,9 @@ func TestStartDiagnoseAnalyzingProgress_startsNewLineAfterLiveProgress(t *testin
 	stop := startDiagnoseAnalyzingProgress(out, true)
 	stop(nil)
 
-	plain := stripANSI(stderr.String())
-	assert.Contains(t, plain, "analyzing [0s]")
-	assert.Contains(t, plain, "✅")
-	assert.True(t, strings.HasPrefix(stderr.String(), "\r\u001b[K\n"))
+	got := stderr.String()
+	assert.True(t, strings.HasPrefix(got, "\r\u001b[K\n"), "clears live progress before analyze footer")
+	assert.NotContains(t, stripANSI(got), "✅")
 }
 
 func TestStartDiagnoseAnalyzingProgress_liveInline_updatesDuration(t *testing.T) {
@@ -152,9 +157,22 @@ func TestStartDiagnoseAnalyzingProgress_liveInline_updatesDuration(t *testing.T)
 	assert.Contains(t, got, "analyzing")
 	assert.NotContains(t, got, "analyzing...")
 	assert.Regexp(t, `\[[0-9]+s\]`, got)
-	assert.Contains(t, stripANSI(got), "✅")
+	assert.NotContains(t, stripANSI(got), "✅")
 	assert.Contains(t, got, "\r\u001b[K")
-	assert.True(t, strings.HasSuffix(got, "\n"))
+	assert.False(t, strings.HasSuffix(got, "\n"), "success stop clears inline line without trailing newline")
+}
+
+func TestStartDiagnoseAnalyzingProgress_stopOnError_showsFailureLine(t *testing.T) {
+	t.Parallel()
+	var stderr strings.Builder
+	out := output.NewForTest(false, io.Discard, &stderr, true)
+
+	stop := startDiagnoseAnalyzingProgress(out, false)
+	stop(errors.New("analyze failed"))
+
+	plain := stripANSI(stderr.String())
+	assert.Contains(t, plain, "analyzing")
+	assert.Contains(t, plain, "❌")
 }
 
 func TestFormatDiagnoseWallClock(t *testing.T) {
@@ -647,8 +665,7 @@ func TestPrintDiagnoseResultsDirHeader(t *testing.T) {
 		p := output.NewForTest(false, &stdout, &stderr, false)
 		printDiagnoseResultsDirHeader(p, dir)
 		assert.Empty(t, stdout.String())
-		assert.Contains(t, stderr.String(), "results directory")
-		assert.Contains(t, stderr.String(), dir)
+		assert.Empty(t, stderr.String())
 	})
 
 	t.Run("ai", func(t *testing.T) {
@@ -1094,9 +1111,9 @@ func TestRunDiagnoseIterationsFailFastOnCategories(t *testing.T) {
 func TestFormatIterationDigestAI(t *testing.T) {
 	t.Parallel()
 	d := IterationDigest{
-		Result: "pass", RanTests: 126, FailTests: 0, TimeoutTests: 0, SlowTests: 6,
+		Result: "pass", RanTests: 126, FailTests: 0, TimeoutTests: 0, SkipTests: 2, SlowTests: 6,
 	}
-	assert.Equal(t, "d 7/100 p 90s r126 f0 t0 s6", formatIterationDigestAI(7, 100, d, 90*time.Second))
+	assert.Equal(t, "d 7/100 p 90s r126 k2 f0 t0 s6", formatIterationDigestAI(7, 100, d, 90*time.Second))
 }
 
 func TestShouldFailFastIterationOptimization(t *testing.T) {
