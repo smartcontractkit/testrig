@@ -18,22 +18,9 @@ test_race:
 bench:
     go test -bench=. -benchmem -run=^$ ./...
 
-# Compare diagnose overhead vs raw `go test -json` on the dummy target.
-# Overhead = ns/op, B/op, allocs/op delta between BenchmarkDiagnose and BenchmarkBaselineGoTest.
-bench_overhead:
-    go test ./internal/runner/ -run='^$' -bench='^Benchmark(BaselineGoTest|Diagnose)$' -benchmem -count=3
-
-# Memory profile of BenchmarkDiagnose (CPU is low-signal; subprocess-bound).
-bench_overhead_profile:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    out_dir=out/bench
-    mkdir -p "$out_dir"
-    go test ./internal/runner/ -run='^$' -bench='^BenchmarkDiagnose$' -benchmem -count=1 \
-        -memprofile="$out_dir/diagnose_mem.prof" 2>&1 | tee "$out_dir/diagnose_bench.txt"
-    go tool pprof -top -nodecount=30 -focus='testrig/internal/runner' "$out_dir/diagnose_mem.prof" \
-        > "$out_dir/diagnose_mem_runner.txt"
-    echo "Mem hotspots: $out_dir/diagnose_mem_runner.txt"
+# Print a diff table of diagnose overhead across iteration counts and parallelism.
+bench_overhead_matrix:
+    TESTRIG_BENCH_OVERHEAD=1 go test ./internal/runner/ -run='^TestDiagnoseOverhead$' -v -timeout=20m
 
 # Local GoReleaser dry-run (snapshot)
 goreleaser:

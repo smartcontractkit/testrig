@@ -26,14 +26,3 @@ go test ./...                 # Test
 **Public API vs CLI are separate layers.** `hooks.go` / `testrig.go` are the library surface. The CLI in `internal/cmd/` wraps that. Don't put CLI logic in the root package.
 
 **Hook catalog drives CLI flags and docs.** Add lifecycle hooks in [`internal/hooks/catalog.go`](internal/hooks/catalog.go) (`Catalog` slice), then wire `RunOptions.Hook`, public `hooks.go` registrar, and `go generate`. Document timing in godoc on registrars in [`hooks.go`](hooks.go) as `// Name registers a hook to <when>.` `hooks.RegisterPersistentFlags` registers Cobra flags from the catalog.
-
-## Diagnose overhead benchmark
-
-`internal/runner/runner_bench_test.go` defines a side-by-side pair against `internal/runner/testdata/dummy/...`:
-
-- `BenchmarkBaselineGoTest` — raw `go test -json` (the floor).
-- `BenchmarkDiagnose` — one `Diagnose` iteration with `parallel=1`.
-
-The overhead `Diagnose` adds is the **delta** in `ns/op`, `B/op`, and `allocs/op` between the two. Run with `just bench_overhead` (uses `-count=3` for variance). For a memory profile of the diagnose pipeline, `just bench_overhead_profile` writes `out/bench/diagnose_mem_runner.txt` (look for `scanIterationJSONL`, `applyTestEvent`, `buildReportFromAggs`). CPU profile is low-signal — parent blocks on the child subprocess.
-
-Drill down into the parent-only pipeline (no subprocess) via the micro-benches in `internal/runner/analyze_bench_test.go`.
