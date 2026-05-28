@@ -71,6 +71,7 @@ pre-commit:
           git status --short
           exit 1
         fi
+      stage_fixed: true
 
     go-mod-tidy:
       tags: linter
@@ -84,6 +85,7 @@ pre-commit:
           git status --short
           exit 1
         fi
+      stage_fixed: true
 
 pre-push:
   parallel: true
