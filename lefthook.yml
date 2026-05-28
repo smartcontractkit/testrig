@@ -65,12 +65,28 @@ pre-push:
     go-mod-tidy:
       tags: linter
       glob: "go.mod"
-      run: go mod tidy
+      run: |
+        before=$(git status --porcelain)
+        go mod tidy
+        after=$(git status --porcelain)
+        if [ "$before" != "$after" ]; then
+          echo "go mod tidy changed files; commit the updates" >&2
+          git status --short
+          exit 1
+        fi
 
     go-generate:
       tags: linter
       glob: "*.go"
-      run: go generate ./...
+      run: |
+        before=$(git status --porcelain)
+        go generate ./...
+        after=$(git status --porcelain)
+        if [ "$before" != "$after" ]; then
+          echo "go generate changed files; commit the updates" >&2
+          git status --short
+          exit 1
+        fi
 
     go-short-tests:
       tags: test

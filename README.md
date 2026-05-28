@@ -51,14 +51,12 @@ You can import `testrig` as a Go package and define your hooks and defaults enti
 Run setup and teardown scripts during your test lifecycle.
 
 <!-- testrig:gendocs:table -->
-
-| Option                      | When it runs                       | CLI equivalent         |
-| --------------------------- | ---------------------------------- | ---------------------- |
-| `testrig.GlobalSetup`       | Run once before any tests          | `--global-setup`       |
-| `testrig.GlobalTeardown`    | Run once after all tests finish    | `--global-teardown`    |
-| `testrig.IterationSetup`    | Run before each diagnose iteration | `--iteration-setup`    |
-| `testrig.IterationTeardown` | Run after each diagnose iteration  | `--iteration-teardown` |
-
+| Option | When it runs | CLI equivalent |
+| ------ | ------------ | -------------- |
+| `testrig.GlobalSetup` | Run once before any tests | `--global-setup` |
+| `testrig.GlobalTeardown` | Run once after all tests finish | `--global-teardown` |
+| `testrig.IterationSetup` | Run before each diagnose iteration | `--iteration-setup` |
+| `testrig.IterationTeardown` | Run after each diagnose iteration | `--iteration-teardown` |
 <!-- /testrig:gendocs:table -->
 
 ## Contributing
