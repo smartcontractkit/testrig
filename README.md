@@ -26,6 +26,21 @@ If you want to be sure that you have fixed a flaky test, or are chasing down a r
 
 `testrig` enables a few QoL features for running large Go test suites efficiently. You can define test lifecycle hooks, and run from the CLI, or from a lightweight Go setup.
 
+### Lifecycle Hooks
+
+Run setup and teardown scripts during your test lifecycle.
+
+<!-- testrig:gendocs:table -->
+
+| Option                      | When it runs                       | CLI equivalent         |
+| --------------------------- | ---------------------------------- | ---------------------- |
+| `testrig.GlobalSetup`       | Run once before any tests          | `--global-setup`       |
+| `testrig.GlobalTeardown`    | Run once after all tests finish    | `--global-teardown`    |
+| `testrig.IterationSetup`    | Run before each diagnose iteration | `--iteration-setup`    |
+| `testrig.IterationTeardown` | Run after each diagnose iteration  | `--iteration-teardown` |
+
+<!-- /testrig:gendocs:table -->
+
 ### CLI
 
 ```sh
@@ -45,24 +60,3 @@ testrig diagnose --iterations 10 \
 ### Native Go
 
 You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [the pkg.go.dev docs](https://pkg.go.dev/github.com/smartcontractkit/testrig#pkg-examples) for an example setup.
-
-### Lifecycle Hooks
-
-Run setup and teardown scripts during your test lifecycle.
-
-<!-- testrig:gendocs:table -->
-| Option | When it runs | CLI equivalent |
-| ------ | ------------ | -------------- |
-| `testrig.GlobalSetup` | Run once before any tests | `--global-setup` |
-| `testrig.GlobalTeardown` | Run once after all tests finish | `--global-teardown` |
-| `testrig.IterationSetup` | Run before each diagnose iteration | `--iteration-setup` |
-| `testrig.IterationTeardown` | Run after each diagnose iteration | `--iteration-teardown` |
-<!-- /testrig:gendocs:table -->
-
-## Contributing
-
-Use [just](https://github.com/casey/just) instead of `make`.
-
-```sh
-just lefthook # Install pre-commit and pre-push hooks
-```

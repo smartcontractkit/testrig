@@ -9,10 +9,8 @@ diagnose-*/
 
 .env
 .venv/
+dist/
 
-# Local Phoenix DB for evals/eval.py
-evals/.phoenix/
-__pycache__/
 
 # Agents
 .antigravitycli/
