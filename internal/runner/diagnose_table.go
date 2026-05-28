@@ -30,8 +30,8 @@ func printDiagnoseIterationTableHeader(out *output.Printer) {
 }
 
 func diagnoseTableHeaderPlain() string {
-	return fmt.Sprintf("%5s  %-8s  %8s  %8s  %8s  %8s  %10s",
-		"Iter", "Result", "Tests", "Failures", "Timeouts", "Slow", "Runtime")
+	return fmt.Sprintf("%5s  %-8s  %8s  %8s  %8s  %8s  %8s  %10s",
+		"Iter", "Result", "Tests", "Skipped", "Failures", "Timeouts", "Slow", "Runtime")
 }
 
 func formatDiagnoseIterationTableRow(iter int, d IterationDigest, dur time.Duration) string {
@@ -42,6 +42,7 @@ func formatDiagnoseIterationTableRow(iter int, d IterationDigest, dur time.Durat
 		lipgloss.Right,
 		termstyle.Muted.Render(strconv.Itoa(d.RanTests)),
 	)
+	skipCol := lipgloss.PlaceHorizontal(diagnoseColCount, lipgloss.Right, diagnoseTableCountStyled(d.SkipTests, "skip"))
 	failCol := lipgloss.PlaceHorizontal(diagnoseColCount, lipgloss.Right, diagnoseTableCountStyled(d.FailTests, "fail"))
 	toCol := lipgloss.PlaceHorizontal(
 		diagnoseColCount,
@@ -53,7 +54,7 @@ func formatDiagnoseIterationTableRow(iter int, d IterationDigest, dur time.Durat
 	rtCol := lipgloss.PlaceHorizontal(diagnoseColRuntime, lipgloss.Right, rt)
 	gap := "  "
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		iterCol, gap, resCol, gap, testsCol, gap, failCol, gap, toCol, gap, slowCol, gap, rtCol)
+		iterCol, gap, resCol, gap, testsCol, gap, skipCol, gap, failCol, gap, toCol, gap, slowCol, gap, rtCol)
 }
 
 func diagnoseTableCountStyled(n int, kind string) string {
@@ -69,6 +70,8 @@ func diagnoseTableCountStyled(n int, kind string) string {
 			return termstyle.OK.Render(s)
 		}
 		return termstyle.Flaky.Render(s)
+	case "skip":
+		return termstyle.Muted.Render(s)
 	default:
 		return termstyle.Muted.Render(s)
 	}

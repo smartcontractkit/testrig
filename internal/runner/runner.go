@@ -92,9 +92,9 @@ func Gotestsum(ctx context.Context, conf *config.App, args []string) error {
 
 // Diagnose runs go test -json once per iteration, writing each stream to
 // iteration-<n>.log.jsonl, then analyzes and writes report.json.
-// With --ai-output, stdout is three lines: the results directory path, the
-// path to report.json, and one line of JSON (the report's summary object, or
-// the JSON keyword null when there is no summary).
+// With --ai-output, stdout is the results directory path during the run, per-
+// iteration progress lines, then one JSON line with event "complete" (report
+// path, summary, and capped findings). Full detail remains in report.json.
 // Test iteration failures do not stop later runs (unless --fail-fast); compile/build
 // failures stop immediately. Results are reflected in report.json. Diagnose returns a non-nil error for setup failures
 // (e.g. mkdir, database reset), analyze/write report failures, or ctx errors
@@ -175,8 +175,8 @@ func Diagnose(
 	var report *Report
 	var logs LogMap
 	var analyzeErr error
-	defer func() { stopAnalyzing(analyzeErr) }()
 	report, logs, analyzeErr = AnalyzeResults(resultsDir, conf.SlowThreshold)
+	stopAnalyzing(analyzeErr)
 	if analyzeErr != nil {
 		out.Stderrf("analyze results: %v\n", analyzeErr)
 		return analyzeErr
@@ -209,24 +209,24 @@ func Diagnose(
 	}
 
 	reportPath := filepath.Join(resultsDir, "report.json")
+	csvPath := diagnoseCSVPath(resultsDir, report)
 	if out.AIOutput() {
-		out.SparseStdoutln(reportPath)
-		summaryJSON, err := marshalAISummaryJSON(report)
+		completeJSON, err := marshalAIDiagnoseComplete(resultsDir, reportPath, report)
 		if err != nil {
-			out.Stderrf("marshal ai summary: %v\n", err)
+			out.Stderrf("marshal ai complete: %v\n", err)
 			return err
 		}
-		out.SparseStdoutln(string(summaryJSON))
+		out.SparseStdoutln(string(completeJSON))
 		return nil
 	}
 
 	out.HumanStderr(
-		termstyle.Label.Render("diagnosis complete") + " " +
+		termstyle.Label.Render("Diagnosis Complete!") + " " +
 			termstyle.Muted.Render("["+formatDiagnoseWallClock(time.Since(start))+"]"))
 	if report != nil {
 		PrintSummary(out.HumanStderrWriter(), report)
 	}
-	out.HumanStderr(termstyle.Muted.Render("report.json: ") + termstyle.Label.Render(reportPath))
+	printDiagnoseArtifactsFooter(out, resultsDir, reportPath, csvPath)
 	return nil
 }
 
@@ -249,15 +249,6 @@ func fillIterationRuntimeSummary(rep *Report) {
 	rep.Summary.IterationDurationMin = minD
 	rep.Summary.IterationDurationMax = maxD
 	rep.Summary.IterationDurationP50 = p50
-}
-
-// marshalAISummaryJSON returns one line of JSON for --ai-output: the report's
-// summary block, or the JSON keyword null when absent (no aggregate stats).
-func marshalAISummaryJSON(report *Report) ([]byte, error) {
-	if report == nil || report.Summary == nil {
-		return []byte("null"), nil
-	}
-	return json.Marshal(report.Summary)
 }
 
 // EffectiveParallelIterations returns the bounded diagnose worker count.
@@ -923,9 +914,7 @@ func extractBuildOutput(path string) (string, error) {
 func printDiagnoseResultsDirHeader(out *output.Printer, resultsDir string) {
 	if out.AIOutput() {
 		out.Stdoutln(resultsDir)
-		return
 	}
-	out.HumanStderr(termstyle.Muted.Render("results directory: ") + termstyle.Label.Render(resultsDir))
 }
 
 // formatDiagnoseWallClock formats total wall time for human diagnose footers (0.1s resolution, seconds show two decimals when fractional).
@@ -962,9 +951,9 @@ func formatDiagnoseSecondsFragment(s float64) string {
 	return fmt.Sprintf("%d.%02ds", w, f)
 }
 
-// startDiagnoseAnalyzingProgress prints a live "analyzing [duration]" line and returns stop.
-// Call stop once analysis is done (and defer stop as well — it is idempotent) so the final
-// "analyzing [duration] ✅" line is written before diagnosis complete, not at process exit.
+// startDiagnoseAnalyzingProgress prints a live "analyzing [duration]" line on stderr and
+// returns stop. Call stop when analysis finishes: on success it clears the progress line
+// so the caller can print "diagnosis complete"; on failure it leaves an analyzing ❌ line.
 func startDiagnoseAnalyzingProgress(out *output.Printer, afterLiveProgress bool) (stop func(error)) {
 	if out.AIOutput() {
 		return func(error) {}
@@ -976,16 +965,16 @@ func startDiagnoseAnalyzingProgress(out *output.Printer, afterLiveProgress bool)
 	analyzeStart := time.Now()
 	var once sync.Once
 	finalize := func(live bool, err error) {
-		elapsed := max(time.Since(analyzeStart).Round(time.Second), 0)
-		mark := termstyle.OK.Render("✅")
-		if err != nil {
-			mark = termstyle.Bad.Render("❌")
+		if err == nil {
+			if live {
+				_, _ = fmt.Fprint(out.HumanStderrWriter(), "\r\033[K")
+			}
+			return
 		}
-		line := termstyle.Label.Render(
-			"analyzing",
-		) + " " + termstyle.Muted.Render(
-			"["+elapsed.String()+"]",
-		) + " " + mark
+		elapsed := max(time.Since(analyzeStart).Round(time.Second), 0)
+		line := termstyle.Label.Render("analyzing") + " " +
+			termstyle.Muted.Render("["+elapsed.String()+"]") + " " +
+			termstyle.Bad.Render("❌")
 		if live {
 			_, _ = fmt.Fprint(out.HumanStderrWriter(), "\r\033[K"+line+"\n")
 			return
@@ -1050,8 +1039,8 @@ func printDiagnoseIterationDigest(
 }
 
 // formatIterationDigestAI prints one line for --ai-output diagnose progress.
-// Tokens: d iter/total; p|f|t result; wall seconds; r named tests that ran;
-// f failing-test entries; t timeouts; s slow tests.
+// Tokens: d iter/total; p|f|t result; wall seconds; r named tests executed (excludes skip-only);
+// k skipped; f failing-test entries; t timeouts; s slow tests.
 func formatIterationDigestAI(iter, total int, d IterationDigest, dur time.Duration) string {
 	rs := "?"
 	switch d.Result {
@@ -1064,12 +1053,13 @@ func formatIterationDigestAI(iter, total int, d IterationDigest, dur time.Durati
 	}
 	sec := max(int(dur.Round(time.Second)/time.Second), 0)
 	return fmt.Sprintf(
-		"d %d/%d %s %ds r%d f%d t%d s%d",
+		"d %d/%d %s %ds r%d k%d f%d t%d s%d",
 		iter,
 		total,
 		rs,
 		sec,
 		d.RanTests,
+		d.SkipTests,
 		d.FailTests,
 		d.TimeoutTests,
 		d.SlowTests,

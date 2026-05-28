@@ -59,22 +59,6 @@ pre-commit:
       run: golangci-lint run --fast-only --fix ./...
       stage_fixed: true
 
-pre-push:
-  parallel: true
-  commands:
-    go-mod-tidy:
-      tags: linter
-      glob: "go.mod"
-      run: |
-        before=$(git status --porcelain)
-        go mod tidy
-        after=$(git status --porcelain)
-        if [ "$before" != "$after" ]; then
-          echo "go mod tidy changed files; commit the updates" >&2
-          git status --short
-          exit 1
-        fi
-
     go-generate:
       tags: linter
       glob: "*.go"
@@ -87,7 +71,30 @@ pre-push:
           git status --short
           exit 1
         fi
+      stage_fixed: true
 
+    go-mod-tidy:
+      tags: linter
+      glob: "go.mod"
+      run: |
+        before=$(git status --porcelain)
+        while IFS= read -r mod; do
+          [ -n "$mod" ] || continue
+          (cd "$(dirname "$mod")" && go mod tidy)
+        done <<EOF
+        $(git ls-files '**/go.mod')
+        EOF
+        after=$(git status --porcelain)
+        if [ "$before" != "$after" ]; then
+          echo "go mod tidy changed files; commit the updates" >&2
+          git status --short
+          exit 1
+        fi
+      stage_fixed: true
+
+pre-push:
+  parallel: true
+  commands:
     go-short-tests:
       tags: test
       glob: "*.go"

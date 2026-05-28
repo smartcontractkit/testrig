@@ -97,7 +97,7 @@ func TestFormatFlakyTestLine_includesCI(t *testing.T) {
 		Fails:     3,
 		Successes: 7,
 	}
-	line := formatFlakyTestLine(e)
+	line := formatSummaryFlatLine(e, formatFlakyStats)
 	assert.Contains(t, line, "30.0%", "observed rate")
 	assert.Contains(t, line, "[Confidence Interval:", "CI annotation")
 }
@@ -110,7 +110,7 @@ func TestFormatFlakyTestLine_packageLevel_includesCI(t *testing.T) {
 		Fails:     3,
 		Successes: 7,
 	}
-	line := formatFlakyTestLine(e)
+	line := formatSummaryFlatLine(e, formatFlakyStats)
 	assert.Contains(t, line, "30.0%", "observed rate")
 	assert.Contains(t, line, "[Confidence Interval:", "CI annotation")
 }
@@ -181,9 +181,21 @@ func TestPrintOverallStats_includesCI_noFlakes(t *testing.T) {
 	PrintSummary(&buf, rep)
 	out := buf.String()
 
-	assert.Contains(t, out, "Flaky:", "should always show flaky line")
-	assert.Contains(t, out, "Flaky Iterations:", "should always show flaky iterations line when iterations > 0")
-	assert.Contains(t, out, "[Confidence Interval:", "CI annotation should appear even with 0 flakes")
+	assert.Contains(t, out, "Flaky Tests", "should always show flaky tests line")
+	assert.Contains(t, out, "Flaky Iterations", "should always show flaky iterations line when iterations > 0")
+	assert.Contains(t, out, "CI ", "CI annotation should appear even with 0 flakes")
+	gap := *rep.Summary.FlakeIterationFailRateUpper - *rep.Summary.FlakeIterationFailRateLower
+	ciText := fmt.Sprintf(
+		"CI %.1f%%–%.1f%%",
+		*rep.Summary.FlakeIterationFailRateLower*100,
+		*rep.Summary.FlakeIterationFailRateUpper*100,
+	)
+	assert.Contains(
+		t,
+		out,
+		ciStyleForGap(gap).Render(ciText),
+		"CI should use gap-based color even with 0 failing iterations",
+	)
 }
 
 func TestCIStyleForGap(t *testing.T) {
@@ -220,14 +232,14 @@ func TestFormatFlakyTestLine_CIColoring(t *testing.T) {
 
 	// 1/100 → tight CI (green): gap well under 10pp
 	tight := TestEntry{Test: "TestTight", Package: "p", Runs: 100, Fails: 1, Successes: 99}
-	tightLine := formatFlakyTestLine(tight)
+	tightLine := formatFlakyStats(tight)
 	tlo, thi := WilsonScoreInterval(tight.Fails, tight.Runs, 0)                       // codespell:ignore thi
 	tCIText := fmt.Sprintf(" [Confidence Interval: %.1f%%–%.1f%%]", tlo*100, thi*100) // codespell:ignore thi
 	assert.Contains(t, tightLine, termstyle.OK.Render(tCIText), "tight CI should use green style")
 
 	// 1/2 → wide CI (red): gap well over 30pp
 	wide := TestEntry{Test: "TestWide", Package: "p", Runs: 2, Fails: 1, Successes: 1}
-	wideLine := formatFlakyTestLine(wide)
+	wideLine := formatFlakyStats(wide)
 	wlo, whi := WilsonScoreInterval(wide.Fails, wide.Runs, 0)
 	wCIText := fmt.Sprintf(" [Confidence Interval: %.1f%%–%.1f%%]", wlo*100, whi*100)
 	assert.Contains(t, wideLine, termstyle.Bad.Render(wCIText), "wide CI should use red style")
