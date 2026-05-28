@@ -157,6 +157,9 @@ func TestDiagnoseOverhead(t *testing.T) {
 	if os.Getenv(overheadMatrixEnv) == "" {
 		t.Skipf("set %s=1 to run the diagnose overhead matrix", overheadMatrixEnv)
 	}
+	if testing.Short() {
+		t.Skip("skipping diagnose overhead matrix in short mode")
+	}
 	repoRoot, err := filepath.Abs("../..")
 	require.NoError(t, err)
 	cleanupNewDiagnoseDirs(t, repoRoot)
