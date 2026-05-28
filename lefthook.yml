@@ -97,5 +97,5 @@ pre-push:
   commands:
     go-short-tests:
       tags: test
-      glob: "*.go"
+      glob: "*.go|go.mod"
       run: go test -short ./...

@@ -226,12 +226,16 @@ func runDiagnoseOverheadMatrix(t *testing.T, label, target string) {
 
 // TestDiagnoseOverhead_Dummy runs the overhead matrix against the tiny dummy package.
 // Run via `just bench_overhead_matrix_dummy`.
+//
+//nolint:paralleltest // serial by design: spawns many go test subprocesses and measures wall time.
 func TestDiagnoseOverhead_Dummy(t *testing.T) {
 	runDiagnoseOverheadMatrix(t, "dummy", benchDummyTarget)
 }
 
 // TestDiagnoseOverhead_Dogfood runs the overhead matrix against the full testrig module (./...).
 // Run via `just bench_overhead_matrix_dogfood`; expect much longer wall time than dummy.
+//
+//nolint:paralleltest // serial by design: spawns many go test subprocesses and measures wall time.
 func TestDiagnoseOverhead_Dogfood(t *testing.T) {
 	runDiagnoseOverheadMatrix(t, "dogfood", benchDogfoodTarget)
 }
