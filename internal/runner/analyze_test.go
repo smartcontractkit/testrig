@@ -242,6 +242,18 @@ func TestDigestIterationJSONL(t *testing.T) {
 		jsonl := `{"Action":"skip","Package":"pkg/s","Test":"TestSkipped","Elapsed":0.0}` + "\n"
 		d, err := DigestIterationJSONL(strings.NewReader(jsonl), 30*time.Second)
 		require.NoError(t, err)
+		assert.Equal(t, 0, d.RanTests)
+		assert.Equal(t, 1, d.SkipTests)
+		assert.Equal(t, "pass", d.Result)
+	})
+
+	t.Run("skip and pass named tests", func(t *testing.T) {
+		t.Parallel()
+		jsonl := `{"Action":"skip","Package":"pkg/s","Test":"TestSkipped","Elapsed":0.0}
+{"Action":"pass","Package":"pkg/s","Test":"TestRan","Elapsed":0.01}
+`
+		d, err := DigestIterationJSONL(strings.NewReader(jsonl), 30*time.Second)
+		require.NoError(t, err)
 		assert.Equal(t, 1, d.RanTests)
 		assert.Equal(t, 1, d.SkipTests)
 		assert.Equal(t, "pass", d.Result)

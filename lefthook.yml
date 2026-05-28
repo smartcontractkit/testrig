@@ -78,7 +78,12 @@ pre-commit:
       glob: "go.mod"
       run: |
         before=$(git status --porcelain)
-        go mod tidy
+        while IFS= read -r mod; do
+          [ -n "$mod" ] || continue
+          (cd "$(dirname "$mod")" && go mod tidy)
+        done <<EOF
+        $(git ls-files '**/go.mod')
+        EOF
         after=$(git status --porcelain)
         if [ "$before" != "$after" ]; then
           echo "go mod tidy changed files; commit the updates" >&2

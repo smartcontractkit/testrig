@@ -1039,7 +1039,7 @@ func printDiagnoseIterationDigest(
 }
 
 // formatIterationDigestAI prints one line for --ai-output diagnose progress.
-// Tokens: d iter/total; p|f|t result; wall seconds; r named tests that ran;
+// Tokens: d iter/total; p|f|t result; wall seconds; r named tests executed (excludes skip-only);
 // k skipped; f failing-test entries; t timeouts; s slow tests.
 func formatIterationDigestAI(iter, total int, d IterationDigest, dur time.Duration) string {
 	rs := "?"

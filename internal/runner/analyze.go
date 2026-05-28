@@ -512,7 +512,7 @@ func buildReportSummary(rep *Report, aggs map[testKey]*aggregate, slowThreshold 
 // Counts match a single-iteration Analyze (same rules as the final report).
 type IterationDigest struct {
 	Result       string // pass, fail, timeout
-	RanTests     int    // distinct named tests (package.test) that completed in this iteration
+	RanTests     int    // distinct named tests (package.test) that executed (pass/fail/timeout), excluding skip-only
 	FailTests    int    // len(IterationSummaries[0].FailingTests)
 	TimeoutTests int    // len(Timeouts) for this iteration
 	SkipTests    int    // distinct named tests skipped in this iteration
@@ -521,18 +521,24 @@ type IterationDigest struct {
 }
 
 // countNamedTestsRanInAggs counts distinct non-empty test keys that recorded
-// pass, fail, or skip in this iteration (len(iterations) > 0 on the aggregate).
+// pass, fail, or timeout in this iteration (skip-only tests are excluded).
 func countNamedTestsRanInAggs(aggs map[testKey]*aggregate) int {
 	n := 0
 	for k, a := range aggs {
 		if k.Test == "" {
 			continue
 		}
-		if len(a.iterations) > 0 {
-			n++
+		if len(a.iterations) == 0 || aggregateSkipOnly(a) {
+			continue
 		}
+		n++
 	}
 	return n
+}
+
+// aggregateSkipOnly is true when the test was only skipped (no pass/fail/timeout).
+func aggregateSkipOnly(a *aggregate) bool {
+	return len(a.skipIters) > 0 && a.passes == 0 && len(a.failedIters) == 0 && !a.timedOut
 }
 
 func countNamedTestsSkippedInAggs(aggs map[testKey]*aggregate) int {
