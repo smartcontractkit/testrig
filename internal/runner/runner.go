@@ -34,6 +34,7 @@ type diagnoseIterationParams struct {
 	Out              *output.Printer
 	ResultsDir       string
 	GoTestArgs       []string
+	ModuleDir        string
 	Iteration        int
 	ShuffleSeed      int64
 	Env              []string
@@ -102,8 +103,6 @@ func Gotestsum(ctx context.Context, conf *config.App, args []string) error {
 // iterSetup and iterTeardown run before/after each iteration. Either may be
 // nil. Teardown runs even when the iteration's go test invocation fails; its
 // error is reported only when the iteration itself succeeded.
-//
-//nolint:gocyclo
 func Diagnose(
 	ctx context.Context,
 	conf *config.App,
@@ -384,6 +383,12 @@ func runDiagnoseIterations(
 	if hooks.runIteration == nil {
 		hooks.runIteration = diagnoseIteration
 	}
+
+	moduleDir, adjustedArgs, err := resolveModuleDir(conf.RepoRoot, goTestArgs)
+	if err != nil {
+		return diagnoseRunState{}, err
+	}
+
 	if hooks.seed == nil {
 		hooks.seed = func() int64 { return rand.Int64N(1<<62) + 1 } //nolint:gosec // G404: non-crypto seed for test shuffle
 	}
@@ -432,7 +437,8 @@ func runDiagnoseIterations(
 		conf:             conf,
 		out:              out,
 		resultsDir:       resultsDir,
-		goTestArgs:       goTestArgs,
+		goTestArgs:       adjustedArgs,
+		moduleDir:        moduleDir,
 		hooks:            hooks,
 		parallel:         parallel,
 		parallelProgress: parallelProgress,
@@ -487,6 +493,7 @@ type diagnoseWorker struct {
 	out              *output.Printer
 	resultsDir       string
 	goTestArgs       []string
+	moduleDir        string
 	hooks            diagnoseRunHooks
 	parallel         int
 	parallelProgress *parallelDiagnoseProgress
@@ -529,6 +536,7 @@ func (w *diagnoseWorker) run(runCtx context.Context, resource diagnoseIterationR
 			Out:              w.out,
 			ResultsDir:       w.resultsDir,
 			GoTestArgs:       w.goTestArgs,
+			ModuleDir:        w.moduleDir,
 			Iteration:        iteration,
 			ShuffleSeed:      seed,
 			Env:              resource.Env,
@@ -1098,16 +1106,12 @@ func (sw *syncedWriter) Write(p []byte) (int, error) {
 
 func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 	conf, out := p.Conf, p.Out
-	resultsDir, goTestArgs := p.ResultsDir, p.GoTestArgs
+	resultsDir := p.ResultsDir
 	iteration, shuffleSeed := p.Iteration, p.ShuffleSeed
 	env := p.Env
 	liveProgress, parallelProgress := p.LiveProgress, p.ParallelProgress
 	diagnoseRunStart, serialProgressMu := p.DiagnoseRunStart, p.SerialProgressMu
-
-	moduleDir, goTestArgs, err := resolveModuleDir(conf.RepoRoot, goTestArgs)
-	if err != nil {
-		return err
-	}
+	moduleDir, goTestArgs := p.ModuleDir, p.GoTestArgs
 
 	start := time.Now()
 	jsonPath := filepath.Join(resultsDir, fmt.Sprintf("iteration-%d.log.jsonl", iteration))
@@ -1115,7 +1119,11 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resultsFile.Close() }()
+	bw := bufio.NewWriterSize(resultsFile, 128*1024)
+	defer func() {
+		_ = bw.Flush()
+		_ = resultsFile.Close()
+	}()
 
 	args, err := buildDiagnoseArgs(goTestArgs, shuffleSeed)
 	if err != nil {
@@ -1130,28 +1138,18 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 5 * time.Second
 
+	sw := &syncedWriter{w: bw}
+	cmd.Stdout = sw
+	cmd.Stderr = sw
+
 	if out.AIOutput() {
-		sw := &syncedWriter{w: resultsFile}
-		cmd.Stdout = sw
-		cmd.Stderr = sw
 		return cmd.Run()
 	}
 
-	sw := &syncedWriter{w: resultsFile}
-	cmd.Stderr = sw
-
-	totalPkgs := -1
-	if n, listErr := listTestPackageCount(ctx, moduleDir, goTestArgs); listErr == nil {
-		totalPkgs = n
-	}
-	prog := newDiagnoseProgress(totalPkgs)
 	if parallelProgress != nil {
 		parallelProgress.start(iteration)
 		defer parallelProgress.finish(iteration)
 	}
-
-	pr, pw := io.Pipe()
-	cmd.Stdout = pw
 
 	live := liveProgress && out.LiveInlineProgress()
 	iter, iters := iteration+1, conf.Iterations
@@ -1175,30 +1173,6 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 		)
 	}
 
-	var readWG sync.WaitGroup
-	var scanErr error
-	readWG.Go(func() {
-		r := bufio.NewReaderSize(pr, 1024*1024)
-		for {
-			line, err := r.ReadBytes('\n')
-			if len(line) > 0 {
-				if _, werr := sw.Write(line); werr != nil {
-					break
-				}
-				completedIncreased := prog.onTestJSONLine(line)
-				if completedIncreased && !live {
-					redraw(false)
-				}
-			}
-			if err != nil {
-				if err != io.EOF {
-					scanErr = err
-				}
-				break
-			}
-		}
-	})
-
 	tickDone := make(chan struct{})
 	var tickWG sync.WaitGroup
 	if live {
@@ -1217,23 +1191,12 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 		redraw(true)
 	}
 
-	runErr := cmd.Start()
-	started := runErr == nil
-	if started {
-		runErr = cmd.Wait()
-		_ = pw.Close()
-	} else {
-		_ = pw.CloseWithError(runErr)
-	}
-	readWG.Wait()
+	runErr := cmd.Run()
 	close(tickDone)
 	tickWG.Wait()
 
 	if live {
 		out.ClearInline()
-	}
-	if scanErr != nil {
-		return fmt.Errorf("reading go test output: %w", scanErr)
 	}
 	return runErr
 }

@@ -12,18 +12,12 @@ func ExampleRun() {
 		// GlobalSetup runs once before any tests start.
 		testrig.GlobalSetup(func(_ context.Context) error {
 			fmt.Println("Starting mock background service...")
-			// Simulate starting a dependency, e.g.:
-			// cmd := exec.CommandContext(ctx, "docker", "compose", "up", "-d")
-			// return cmd.Run()
 			return nil
 		}),
 
 		// IterationSetup runs before each diagnose iteration.
 		testrig.IterationSetup(func(_ context.Context) error {
 			fmt.Println("Resetting database state for next iteration...")
-			// Simulate resetting state:
-			// cmd := exec.CommandContext(ctx, "psql", "-c", "TRUNCATE events")
-			// return cmd.Run()
 			return nil
 		}),
 

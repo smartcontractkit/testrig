@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -206,12 +207,18 @@ func (rep *Report) TestGroups() []TestGroup {
 // coupling the parser to the filesystem.
 type LogMap map[testKey]map[int]string
 
+var readerPool = sync.Pool{
+	New: func() any {
+		return bufio.NewReaderSize(nil, 1024*1024)
+	},
+}
+
 // Analyze reads per-iteration test2json streams and classifies tests.
 // Malformed lines are silently skipped (go test can interleave non-JSON).
 func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogMap, error) {
 	aggs := make(map[testKey]*aggregate)
 	for i, r := range iterations {
-		if err := scanIterationJSONL(r, i, aggs, nil); err != nil {
+		if err := scanIterationJSONL(r, i, aggs, nil, slowThreshold); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -241,16 +248,35 @@ func (a *aggregate) recordElapsed(iterIdx int, d time.Duration) {
 
 // scanIterationJSONL merges one iteration's JSONL stream into aggs at iterIdx.
 // meta may be nil; when set, records e.g. compile/build failure from FailedBuild on fail events.
-func scanIterationJSONL(r io.Reader, iterIdx int, aggs map[testKey]*aggregate, meta *iterationScanMeta) error {
-	reader := bufio.NewReaderSize(r, 1024*1024)
+func scanIterationJSONL(
+	r io.Reader,
+	iterIdx int,
+	aggs map[testKey]*aggregate,
+	meta *iterationScanMeta,
+	slowThreshold time.Duration,
+) error {
+	reader := readerPool.Get().(*bufio.Reader)
+	reader.Reset(r)
+	defer func() {
+		reader.Reset(nil)
+		readerPool.Put(reader)
+	}()
+
 	for {
-		line, err := reader.ReadBytes('\n')
+		line, err := reader.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			rest, err2 := reader.ReadBytes('\n')
+			line = append(append([]byte(nil), line...), rest...)
+			err = err2
+		}
+
 		if len(line) > 0 && line[0] == '{' {
 			var ev TestEvent
 			if json.Unmarshal(line, &ev) == nil {
-				applyTestEvent(aggs, iterIdx, &ev, meta)
+				applyTestEvent(aggs, iterIdx, &ev, meta, slowThreshold)
 			}
 		}
+
 		if err != nil {
 			if err != io.EOF {
 				return fmt.Errorf("reading iteration %d: %w", iterIdx, err)
@@ -260,7 +286,13 @@ func scanIterationJSONL(r io.Reader, iterIdx int, aggs map[testKey]*aggregate, m
 	}
 }
 
-func applyTestEvent(aggs map[testKey]*aggregate, iterIdx int, ev *TestEvent, meta *iterationScanMeta) {
+func applyTestEvent(
+	aggs map[testKey]*aggregate,
+	iterIdx int,
+	ev *TestEvent,
+	meta *iterationScanMeta,
+	slowThreshold time.Duration,
+) {
 	key := testKey{Package: ev.Package, Test: ev.Test}
 	a := aggs[key]
 	if a == nil {
@@ -271,7 +303,11 @@ func applyTestEvent(aggs map[testKey]*aggregate, iterIdx int, ev *TestEvent, met
 	case "pass":
 		a.passes++
 		a.iterations[iterIdx] = struct{}{}
-		a.recordElapsed(iterIdx, seconds(ev.Elapsed))
+		el := seconds(ev.Elapsed)
+		a.recordElapsed(iterIdx, el)
+		if !a.timedOut && (slowThreshold == 0 || el <= slowThreshold) {
+			delete(a.outputs, iterIdx)
+		}
 	case "fail":
 		if meta != nil && ev.FailedBuild != "" {
 			meta.sawFailedBuild = true
@@ -284,7 +320,11 @@ func applyTestEvent(aggs map[testKey]*aggregate, iterIdx int, ev *TestEvent, met
 		a.skips++
 		a.iterations[iterIdx] = struct{}{}
 		a.skipIters[iterIdx] = true
-		a.recordElapsed(iterIdx, seconds(ev.Elapsed))
+		el := seconds(ev.Elapsed)
+		a.recordElapsed(iterIdx, el)
+		if !a.timedOut {
+			delete(a.outputs, iterIdx)
+		}
 	case "output":
 		if strings.Contains(ev.Output, timeoutPanic) {
 			a.timedOut = true
@@ -559,7 +599,7 @@ func countNamedTestsSkippedInAggs(aggs map[testKey]*aggregate) int {
 func DigestIterationJSONL(r io.Reader, slowThreshold time.Duration) (IterationDigest, error) {
 	aggs := make(map[testKey]*aggregate)
 	var meta iterationScanMeta
-	if err := scanIterationJSONL(r, 0, aggs, &meta); err != nil {
+	if err := scanIterationJSONL(r, 0, aggs, &meta, slowThreshold); err != nil {
 		return IterationDigest{}, err
 	}
 	reattributeTimeouts(aggs, newAggregate)
