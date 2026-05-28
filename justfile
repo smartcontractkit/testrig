@@ -18,9 +18,16 @@ test_race:
 bench:
     go test -bench=. -benchmem -run=^$ ./...
 
-# Print a diff table of diagnose overhead across iteration counts and parallelism.
-bench_overhead_matrix:
-    TESTRIG_BENCH_OVERHEAD=1 go test ./internal/runner/ -run='^TestDiagnoseOverhead$' -v -timeout=20m
+# Print a diff table of diagnose overhead (dummy package; fast).
+bench_overhead_matrix_dummy:
+    TESTRIG_BENCH_OVERHEAD=1 go test ./internal/runner/ -run='^TestDiagnoseOverhead_Dummy$' -v
+
+# Same matrix against the full testrig module (./...); slow.
+bench_overhead_matrix_dogfood:
+    TESTRIG_BENCH_OVERHEAD=1 go test ./internal/runner/ -run='^TestDiagnoseOverhead_Dogfood$' -v
+
+# Run dummy then dogfood overhead matrices.
+bench_overhead_matrix: bench_overhead_matrix_dummy bench_overhead_matrix_dogfood
 
 # Local GoReleaser dry-run (snapshot)
 goreleaser:

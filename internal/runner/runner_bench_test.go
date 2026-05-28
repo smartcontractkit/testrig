@@ -14,31 +14,39 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/smartcontractkit/testrig/internal/config"
 	"github.com/smartcontractkit/testrig/internal/output"
 )
 
-const benchOverheadPackage = "./internal/runner/testdata/dummy/..."
+const (
+	benchDummyTarget   = "./internal/runner/testdata/dummy/..."
+	benchDogfoodTarget = "./..."
+)
 
 // baselineWorkload runs the raw `go test -json` floor for one diagnose-equivalent
-// workload: `iterations` invocations against the dummy target, at most `parallel`
-// running concurrently (mirroring how Diagnose schedules iterations across workers).
-func baselineWorkload(ctx context.Context, repoRoot string, iterations, parallel int) error {
+// workload: `iterations` invocations against target, at most `parallel` running
+// concurrently (mirroring how Diagnose schedules iterations across workers).
+func baselineWorkload(ctx context.Context, repoRoot, target string, iterations, parallel int) error {
 	if parallel < 1 {
 		parallel = 1
 	}
-	sem := make(chan struct{}, parallel)
+	sem := semaphore.NewWeighted(int64(parallel))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
 	for range iterations {
-		sem <- struct{}{}
+		if err := sem.Acquire(ctx, 1); err != nil {
+			wg.Wait()
+			return err
+		}
 		wg.Go(func() {
-			defer func() { <-sem }()
-			//nolint:gosec // G204: fixed args against testdata target
-			cmd := exec.CommandContext(ctx, "go", "test", "-json", "-count=1", benchOverheadPackage)
+			defer sem.Release(1)
+			//nolint:gosec // G204: target is fixed per test (dummy or ./...)
+			cmd := exec.CommandContext(ctx, "go", "test", "-json", "-count=1", target)
 			cmd.Dir = repoRoot
+			cmd.Env = envWithoutKey(os.Environ(), overheadMatrixEnv)
 			cmd.Stdout = io.Discard
 			cmd.Stderr = io.Discard
 			if err := cmd.Run(); err != nil {
@@ -54,16 +62,33 @@ func baselineWorkload(ctx context.Context, repoRoot string, iterations, parallel
 	return firstErr
 }
 
-// diagnoseWorkload runs one Diagnose call against the dummy target with the given
-// iteration count and parallelism. Output is discarded.
-func diagnoseWorkload(ctx context.Context, out *output.Printer, repoRoot string, iterations, parallel int) error {
+// diagnoseWorkload runs one Diagnose call against target with the given iteration
+// count and parallelism. Output is discarded.
+func diagnoseWorkload(
+	ctx context.Context,
+	out *output.Printer,
+	repoRoot, target string,
+	iterations, parallel int,
+) error {
 	conf := &config.App{
 		RepoRoot:           repoRoot,
 		Iterations:         iterations,
 		ParallelIterations: parallel,
 		SlowThreshold:      time.Second,
 	}
-	return Diagnose(ctx, conf, out, []string{benchOverheadPackage}, nil, nil)
+	return Diagnose(ctx, conf, out, []string{target}, nil, nil)
+}
+
+func envWithoutKey(env []string, key string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if e == key || strings.HasPrefix(e, prefix) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // existingDiagnoseDirs lists the diagnose-* result dirs currently in repoRoot.
@@ -99,7 +124,7 @@ func BenchmarkBaselineGoTest(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		require.NoError(b, baselineWorkload(ctx, repoRoot, 1, 1))
+		require.NoError(b, baselineWorkload(ctx, repoRoot, benchDummyTarget, 1, 1))
 	}
 }
 
@@ -115,7 +140,7 @@ func BenchmarkDiagnose(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		require.NoError(b, diagnoseWorkload(ctx, out, repoRoot, 1, 1))
+		require.NoError(b, diagnoseWorkload(ctx, out, repoRoot, benchDummyTarget, 1, 1))
 	}
 }
 
@@ -142,27 +167,36 @@ var overheadMatrix = []overheadConfig{
 	{iterations: 8, parallel: 8},
 }
 
-// overheadMatrixEnv gates TestDiagnoseOverhead; it spawns many `go test`
+// overheadMatrixEnv gates TestDiagnoseOverhead_*; it spawns many `go test`
 // subprocesses and is too slow for the normal test run.
 const overheadMatrixEnv = "TESTRIG_BENCH_OVERHEAD"
 
-// TestDiagnoseOverhead measures Diagnose overhead vs the raw `go test` floor
-// across the overheadMatrix and logs a diff table (total overhead and
-// per-iteration overhead). It is a test, not a Benchmark, because it drives
-// testing.Benchmark internally (which deadlocks if called from a benchmark).
-// Run via `just bench_overhead_matrix`; gated behind TESTRIG_BENCH_OVERHEAD.
-//
-//nolint:paralleltest // serial by design: spawns many go test subprocesses and measures wall time.
-func TestDiagnoseOverhead(t *testing.T) {
+func skipUnlessDiagnoseOverheadMatrix(t *testing.T) {
+	t.Helper()
 	if os.Getenv(overheadMatrixEnv) == "" {
 		t.Skipf("set %s=1 to run the diagnose overhead matrix", overheadMatrixEnv)
 	}
 	if testing.Short() {
 		t.Skip("skipping diagnose overhead matrix in short mode")
 	}
+}
+
+// runDiagnoseOverheadMatrix measures Diagnose overhead vs the raw `go test` floor
+// across overheadMatrix for target and logs a diff table. It is a test helper, not
+// a Benchmark, because it drives testing.Benchmark internally (which deadlocks if
+// called from a benchmark).
+//
+//nolint:paralleltest // serial by design: spawns many go test subprocesses and measures wall time.
+func runDiagnoseOverheadMatrix(t *testing.T, label, target string) {
+	t.Helper()
+	skipUnlessDiagnoseOverheadMatrix(t)
+
 	repoRoot, err := filepath.Abs("../..")
 	require.NoError(t, err)
 	cleanupNewDiagnoseDirs(t, repoRoot)
+
+	// Child `go test` processes must not see TESTRIG_BENCH_OVERHEAD (dogfood runs ./...).
+	t.Setenv(overheadMatrixEnv, "")
 
 	out := output.NewForTest(true, io.Discard, io.Discard, false)
 	ctx := context.Background()
@@ -172,7 +206,7 @@ func TestDiagnoseOverhead(t *testing.T) {
 		base := testing.Benchmark(func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				require.NoError(b, baselineWorkload(ctx, repoRoot, cfg.iterations, cfg.parallel))
+				require.NoError(b, baselineWorkload(ctx, repoRoot, target, cfg.iterations, cfg.parallel))
 			}
 		})
 		require.NotZero(t, base.N, "baseline workload failed for %+v", cfg)
@@ -180,14 +214,26 @@ func TestDiagnoseOverhead(t *testing.T) {
 		diag := testing.Benchmark(func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				require.NoError(b, diagnoseWorkload(ctx, out, repoRoot, cfg.iterations, cfg.parallel))
+				require.NoError(b, diagnoseWorkload(ctx, out, repoRoot, target, cfg.iterations, cfg.parallel))
 			}
 		})
 		require.NotZero(t, diag.N, "diagnose workload failed for %+v", cfg)
 
 		rows = append(rows, overheadRow{cfg: cfg, baseline: base, diagnose: diag})
 	}
-	printDiagnoseOverhead(t, rows)
+	printDiagnoseOverhead(t, label, target, rows)
+}
+
+// TestDiagnoseOverhead_Dummy runs the overhead matrix against the tiny dummy package.
+// Run via `just bench_overhead_matrix_dummy`.
+func TestDiagnoseOverhead_Dummy(t *testing.T) {
+	runDiagnoseOverheadMatrix(t, "dummy", benchDummyTarget)
+}
+
+// TestDiagnoseOverhead_Dogfood runs the overhead matrix against the full testrig module (./...).
+// Run via `just bench_overhead_matrix_dogfood`; expect much longer wall time than dummy.
+func TestDiagnoseOverhead_Dogfood(t *testing.T) {
+	runDiagnoseOverheadMatrix(t, "dogfood", benchDogfoodTarget)
 }
 
 // roundedDur renders ns as a duration rounded to microseconds for the table.
@@ -205,7 +251,7 @@ func overheadDur(ns int64) string {
 
 // printDiagnoseOverhead logs a table of baseline vs diagnose wall time per config.
 // overhead = diagnose ns/op - baseline ns/op; overhead/iter divides by iterations.
-func printDiagnoseOverhead(t *testing.T, rows []overheadRow) {
+func printDiagnoseOverhead(t *testing.T, label, target string, rows []overheadRow) {
 	t.Helper()
 	var sb strings.Builder
 	tw := tabwriter.NewWriter(&sb, 0, 0, 2, ' ', 0)
@@ -223,7 +269,7 @@ func printDiagnoseOverhead(t *testing.T, rows []overheadRow) {
 		)
 	}
 	_ = tw.Flush()
-	t.Logf("\nDiagnose overhead vs raw go test:\n%s", sb.String())
+	t.Logf("\nDiagnose overhead vs raw go test (%s, target=%s):\n%s", label, target, sb.String())
 }
 
 func BenchmarkResolveModuleDir(b *testing.B) {
