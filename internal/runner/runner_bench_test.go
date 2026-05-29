@@ -215,11 +215,19 @@ func averageBenchmarkResults(results []testing.BenchmarkResult) testing.Benchmar
 		allocs += r.AllocsPerOp()
 	}
 	n := int64(len(results))
+	avgBytes := bytes / n
+	avgAllocs := allocs / n
+	if avgBytes < 0 {
+		avgBytes = 0
+	}
+	if avgAllocs < 0 {
+		avgAllocs = 0
+	}
 	return testing.BenchmarkResult{
 		N:         1,
 		T:         time.Duration(ns / n),
-		MemBytes:  uint64(bytes / n),
-		MemAllocs: uint64(allocs / n),
+		MemBytes:  uint64(avgBytes),
+		MemAllocs: uint64(avgAllocs),
 	}
 }
 
