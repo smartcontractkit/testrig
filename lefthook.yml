@@ -106,5 +106,9 @@ pre-push:
   commands:
     go-short-tests:
       tags: test
-      glob: "*.go|go.mod"
+      glob:
+        - "*.go"
+        - "**/*.go"
+        - "go.mod"
+        - "go.sum"
       run: go test -short ./...
