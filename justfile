@@ -14,19 +14,19 @@ test:
 test_race:
     go tool gotestsum -- -race ./...
 
-# Run benchmarks with memory stats and specific CPU counts
+# Run standard benchmarks
 bench:
     go test -bench=. -benchmem -run=^$ ./...
 
-# Print a diff table of diagnose overhead (dummy package; fast).
+# Diagnose overhead matrix (dummy; fast). 5 runs averaged per cell; TESTRIG_BENCH_OVERHEAD_RUNS=3 to override.
 bench_overhead_matrix_dummy:
-    TESTRIG_BENCH_OVERHEAD=1 go test ./internal/runner/ -run='^TestDiagnoseOverhead_Dummy$' -v
+    TESTRIG_BENCH_OVERHEAD=1 go test ./internal/runner/ -run='^TestDiagnoseOverhead_Dummy$' -count=1 -v
 
-# Same matrix against the full testrig module (./...); slow.
+# Run benchmark to measure diagnose overhead against the full testrig module (./...); slow.
 bench_overhead_matrix_dogfood:
-    TESTRIG_BENCH_OVERHEAD=1 go test ./internal/runner/ -run='^TestDiagnoseOverhead_Dogfood$' -v
+    TESTRIG_BENCH_OVERHEAD=1 go test ./internal/runner/ -run='^TestDiagnoseOverhead_Dogfood$' -count=1 -v
 
-# Run dummy then dogfood overhead matrices.
+# Run benchmarks to measure diagnose overhead for both dummy and dogfood targets.
 bench_overhead_matrix: bench_overhead_matrix_dummy bench_overhead_matrix_dogfood
 
 # Local GoReleaser dry-run (snapshot)

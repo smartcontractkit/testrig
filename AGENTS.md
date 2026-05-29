@@ -3,6 +3,7 @@
 - An easy to import and use test rig for Go projects
 - Can be used as a package or CLI
 - Used to find and fix flaky tests
+- Minimal CPU, RAM, and timing overhead added to test execution
 
 ## Validate changes
 

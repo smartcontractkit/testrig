@@ -1120,9 +1120,14 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 		return err
 	}
 	bw := bufio.NewWriterSize(resultsFile, 128*1024)
+	var retErr error
 	defer func() {
-		_ = bw.Flush()
-		_ = resultsFile.Close()
+		if err := bw.Flush(); err != nil && retErr == nil {
+			retErr = err
+		}
+		if err := resultsFile.Close(); err != nil && retErr == nil {
+			retErr = err
+		}
 	}()
 
 	args, err := buildDiagnoseArgs(goTestArgs, shuffleSeed)
@@ -1143,7 +1148,8 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 	cmd.Stderr = sw
 
 	if out.AIOutput() {
-		return cmd.Run()
+		retErr = cmd.Run()
+		return retErr
 	}
 
 	if parallelProgress != nil {
@@ -1191,14 +1197,14 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 		redraw(true)
 	}
 
-	runErr := cmd.Run()
+	retErr = cmd.Run()
 	close(tickDone)
 	tickWG.Wait()
 
 	if live {
 		out.ClearInline()
 	}
-	return runErr
+	return retErr
 }
 
 func newRunMeta(

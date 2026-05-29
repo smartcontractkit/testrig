@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -171,6 +172,15 @@ var overheadMatrix = []overheadConfig{
 // subprocesses and is too slow for the normal test run.
 const overheadMatrixEnv = "TESTRIG_BENCH_OVERHEAD"
 
+// overheadMatrixRunsEnv sets how many times each matrix cell is benchmarked
+// before averaging (default 5). Use 3–5 for stabler numbers; 1 for a quick smoke.
+const overheadMatrixRunsEnv = "TESTRIG_BENCH_OVERHEAD_RUNS"
+
+const (
+	overheadMatrixRunsDefault = 5
+	overheadMatrixRunsMax     = 10
+)
+
 func skipUnlessDiagnoseOverheadMatrix(t *testing.T) {
 	t.Helper()
 	if os.Getenv(overheadMatrixEnv) == "" {
@@ -181,12 +191,62 @@ func skipUnlessDiagnoseOverheadMatrix(t *testing.T) {
 	}
 }
 
+func overheadMatrixRuns() int {
+	s := strings.TrimSpace(os.Getenv(overheadMatrixRunsEnv))
+	if s == "" {
+		return overheadMatrixRunsDefault
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return overheadMatrixRunsDefault
+	}
+	return min(n, overheadMatrixRunsMax)
+}
+
+// averageBenchmarkResults averages per-op metrics across repeated benchmark runs.
+func averageBenchmarkResults(results []testing.BenchmarkResult) testing.BenchmarkResult {
+	if len(results) == 0 {
+		return testing.BenchmarkResult{}
+	}
+	var ns, bytes, allocs int64
+	for _, r := range results {
+		ns += r.NsPerOp()
+		bytes += r.AllocedBytesPerOp()
+		allocs += r.AllocsPerOp()
+	}
+	n := int64(len(results))
+	return testing.BenchmarkResult{
+		N:         1,
+		T:         time.Duration(ns / n),
+		MemBytes:  uint64(bytes / n),
+		MemAllocs: uint64(allocs / n),
+	}
+}
+
+// repeatBenchmark runs fn runs times and returns the averaged result.
+// phase labels log lines; pass "" to omit per-run logging.
+func repeatBenchmark(t *testing.T, runs int, phase string, fn func() testing.BenchmarkResult) testing.BenchmarkResult {
+	t.Helper()
+	results := make([]testing.BenchmarkResult, runs)
+	for i := range runs {
+		start := time.Now()
+		results[i] = fn()
+		if phase != "" {
+			t.Logf("%s: run %d/%d done (wall %s, %s/op)",
+				phase, i+1, runs, time.Since(start).Round(time.Second), roundedDur(results[i].NsPerOp()))
+		}
+	}
+	avg := averageBenchmarkResults(results)
+	if phase != "" {
+		t.Logf("%s: mean %s/op over %d runs", phase, roundedDur(avg.NsPerOp()), runs)
+	}
+	return avg
+}
+
 // runDiagnoseOverheadMatrix measures Diagnose overhead vs the raw `go test` floor
 // across overheadMatrix for target and logs a diff table. It is a test helper, not
 // a Benchmark, because it drives testing.Benchmark internally (which deadlocks if
 // called from a benchmark).
-//
-//nolint:paralleltest // serial by design: spawns many go test subprocesses and measures wall time.
 func runDiagnoseOverheadMatrix(t *testing.T, label, target string) {
 	t.Helper()
 	skipUnlessDiagnoseOverheadMatrix(t)
@@ -200,32 +260,51 @@ func runDiagnoseOverheadMatrix(t *testing.T, label, target string) {
 
 	out := output.NewForTest(true, io.Discard, io.Discard, false)
 	ctx := context.Background()
+	runs := overheadMatrixRuns()
+	total := len(overheadMatrix)
+	t.Logf("[%s] overhead matrix: target=%s, %d cells, %d runs/cell (%s overrides)",
+		label, target, total, runs, overheadMatrixRunsEnv)
 
-	rows := make([]overheadRow, 0, len(overheadMatrix))
-	for _, cfg := range overheadMatrix {
-		base := testing.Benchmark(func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				require.NoError(b, baselineWorkload(ctx, repoRoot, target, cfg.iterations, cfg.parallel))
-			}
-		})
-		require.NotZero(t, base.N, "baseline workload failed for %+v", cfg)
+	rows := make([]overheadRow, 0, total)
+	for cell, cfg := range overheadMatrix {
+		cellLabel := fmt.Sprintf("[%s] cell %d/%d iters=%d parallel=%d",
+			label, cell+1, total, cfg.iterations, cfg.parallel)
 
-		diag := testing.Benchmark(func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				require.NoError(b, diagnoseWorkload(ctx, out, repoRoot, target, cfg.iterations, cfg.parallel))
-			}
+		base := repeatBenchmark(t, runs, cellLabel+" baseline", func() testing.BenchmarkResult {
+			r := testing.Benchmark(func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					require.NoError(b, baselineWorkload(ctx, repoRoot, target, cfg.iterations, cfg.parallel))
+				}
+			})
+			require.NotZero(t, r.N, "baseline workload failed for %+v", cfg)
+			return r
 		})
-		require.NotZero(t, diag.N, "diagnose workload failed for %+v", cfg)
+
+		diag := repeatBenchmark(t, runs, cellLabel+" diagnose", func() testing.BenchmarkResult {
+			r := testing.Benchmark(func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					require.NoError(b, diagnoseWorkload(ctx, out, repoRoot, target, cfg.iterations, cfg.parallel))
+				}
+			})
+			require.NotZero(t, r.N, "diagnose workload failed for %+v", cfg)
+			return r
+		})
+
+		overheadNs := diag.NsPerOp() - base.NsPerOp()
+		t.Logf("%s: done — overhead %s (%s of diagnose; baseline %s, diagnose %s)",
+			cellLabel, overheadDur(overheadNs), overheadPercent(overheadNs, diag.NsPerOp()),
+			roundedDur(base.NsPerOp()), roundedDur(diag.NsPerOp()))
 
 		rows = append(rows, overheadRow{cfg: cfg, baseline: base, diagnose: diag})
 	}
-	printDiagnoseOverhead(t, label, target, rows)
+	printDiagnoseOverhead(t, label, target, runs, rows)
 }
 
 // TestDiagnoseOverhead_Dummy runs the overhead matrix against the tiny dummy package.
-// Run via `just bench_overhead_matrix_dummy`.
+// Run via `just bench_overhead_matrix_dummy`. Each cell is benchmarked 5 times by default
+// and averaged; set TESTRIG_BENCH_OVERHEAD_RUNS (e.g. 3) to tune accuracy vs wall time.
 //
 //nolint:paralleltest // serial by design: spawns many go test subprocesses and measures wall time.
 func TestDiagnoseOverhead_Dummy(t *testing.T) {
@@ -253,27 +332,74 @@ func overheadDur(ns int64) string {
 	return roundedDur(ns)
 }
 
+// overheadPercent is overhead as a share of diagnose runtime (overhead / diagnose).
+func overheadPercent(overheadNs, diagnoseNs int64) string {
+	if diagnoseNs <= 0 {
+		return "n/a"
+	}
+	if overheadNs < 0 {
+		overheadNs = 0
+	}
+	return fmt.Sprintf("%.1f%%", float64(overheadNs)*100/float64(diagnoseNs))
+}
+
 // printDiagnoseOverhead logs a table of baseline vs diagnose wall time per config.
 // overhead = diagnose ns/op - baseline ns/op; overhead/iter divides by iterations.
-func printDiagnoseOverhead(t *testing.T, label, target string, rows []overheadRow) {
+// Each cell is the mean of runs repeated benchmark invocations.
+func printDiagnoseOverhead(t *testing.T, label, target string, runs int, rows []overheadRow) {
 	t.Helper()
 	var sb strings.Builder
 	tw := tabwriter.NewWriter(&sb, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "iters\tparallel\tbaseline\tdiagnose\toverhead\toverhead/iter")
+	_, _ = fmt.Fprintln(tw, "iters\tparallel\tbaseline\tdiagnose\toverhead\toverhead%\toverhead/iter")
 	for _, r := range rows {
 		overheadNs := r.diagnose.NsPerOp() - r.baseline.NsPerOp()
 		perIterNs := overheadNs / int64(max(r.cfg.iterations, 1))
-		_, _ = fmt.Fprintf(tw, "%d\t%d\t%s\t%s\t%s\t%s\n",
+		diagNs := r.diagnose.NsPerOp()
+		_, _ = fmt.Fprintf(tw, "%d\t%d\t%s\t%s\t%s\t%s\t%s\n",
 			r.cfg.iterations,
 			r.cfg.parallel,
 			roundedDur(r.baseline.NsPerOp()),
-			roundedDur(r.diagnose.NsPerOp()),
+			roundedDur(diagNs),
 			overheadDur(overheadNs),
+			overheadPercent(overheadNs, diagNs),
 			overheadDur(perIterNs),
 		)
 	}
 	_ = tw.Flush()
-	t.Logf("\nDiagnose overhead vs raw go test (%s, target=%s):\n%s", label, target, sb.String())
+	t.Logf(`
+--------------------------------------------------------------------------------
+Diagnose overhead vs raw go test (%s, target=%s, %d-run average per cell)
+--------------------------------------------------------------------------------
+%s`,
+		label, target, runs, sb.String())
+}
+
+func TestAverageBenchmarkResults(t *testing.T) {
+	t.Parallel()
+	avg := averageBenchmarkResults([]testing.BenchmarkResult{
+		{N: 10, T: 1_000, MemBytes: 1_000, MemAllocs: 100},
+		{N: 10, T: 3_000, MemBytes: 3_000, MemAllocs: 300},
+	})
+	require.Equal(t, int64(200), avg.NsPerOp())
+	require.Equal(t, int64(200), avg.AllocedBytesPerOp())
+	require.Equal(t, int64(20), avg.AllocsPerOp())
+}
+
+func TestOverheadPercent(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "20.0%", overheadPercent(20, 100))
+	require.Equal(t, "0.0%", overheadPercent(-5, 100))
+	require.Equal(t, "n/a", overheadPercent(10, 0))
+}
+
+func TestOverheadMatrixRuns(t *testing.T) {
+	require.Equal(t, 5, overheadMatrixRuns())
+	t.Setenv(overheadMatrixRunsEnv, "3")
+	require.Equal(t, 3, overheadMatrixRuns())
+	t.Setenv(overheadMatrixRunsEnv, "99")
+	require.Equal(t, overheadMatrixRunsMax, overheadMatrixRuns())
+	t.Setenv(overheadMatrixRunsEnv, "nope")
+	require.Equal(t, overheadMatrixRunsDefault, overheadMatrixRuns())
 }
 
 func BenchmarkResolveModuleDir(b *testing.B) {
