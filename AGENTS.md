@@ -3,6 +3,7 @@
 - An easy to import and use test rig for Go projects
 - Can be used as a package or CLI
 - Used to find and fix flaky tests
+- Minimal CPU, RAM, and timing overhead added to test execution
 
 ## Validate changes
 
@@ -18,7 +19,6 @@ go test ./...                 # Test
 - `internal/runner/` — core test execution. `Diagnose` is the main entry point; `diagnoseRunHooks` carries iteration hooks as `func(context.Context) error` fields.
 - `internal/config/` — Cobra flag registry config loading. `config.App` is the unified config struct.
 - `internal/output/` — output printer abstraction. `--ai-output` flag controls format.
-- `internal/repo/` — git/module helpers.
 
 ## Critical decisions
 
