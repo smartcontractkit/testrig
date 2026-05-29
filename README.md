@@ -31,14 +31,12 @@ If you want to be sure that you have fixed a flaky test, or are chasing down a r
 Run setup and teardown scripts during your test lifecycle.
 
 <!-- testrig:gendocs:table -->
-
-| Option                      | When it runs                       | CLI equivalent         |
-| --------------------------- | ---------------------------------- | ---------------------- |
-| `testrig.GlobalSetup`       | Run once before any tests          | `--global-setup`       |
-| `testrig.GlobalTeardown`    | Run once after all tests finish    | `--global-teardown`    |
-| `testrig.IterationSetup`    | Run before each diagnose iteration | `--iteration-setup`    |
-| `testrig.IterationTeardown` | Run after each diagnose iteration  | `--iteration-teardown` |
-
+| Option | When it runs | CLI equivalent |
+| ------ | ------------ | -------------- |
+| `testrig.GlobalSetup` | Run once before any tests | `--global-setup` |
+| `testrig.GlobalTeardown` | Run once after all tests finish | `--global-teardown` |
+| `testrig.IterationSetup` | Run before each diagnose iteration | `--iteration-setup` |
+| `testrig.IterationTeardown` | Run after each diagnose iteration | `--iteration-teardown` |
 <!-- /testrig:gendocs:table -->
 
 ### CLI

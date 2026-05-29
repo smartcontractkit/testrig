@@ -10,7 +10,7 @@ diagnose-*/
 .env
 .venv/
 dist/
-
+*.test
 
 # Agents
 .antigravitycli/
