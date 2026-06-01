@@ -19,12 +19,14 @@ import (
 func touchCmd(p string) string { return "touch " + p }
 
 func newCmdWithHookFlags(setup, teardown string) *cobra.Command {
-	c := &cobra.Command{Use: "x"}
-	hooks.RegisterPersistentFlags(c.Flags())
-	_ = c.Flags().Set("global-setup", setup)
-	_ = c.Flags().Set("global-teardown", teardown)
-	c.SetContext(context.Background())
-	return c
+	root := &cobra.Command{Use: "testrig"}
+	hooks.RegisterPersistentFlags(root.PersistentFlags())
+	_ = root.PersistentFlags().Set("global-setup", setup)
+	_ = root.PersistentFlags().Set("global-teardown", teardown)
+	sub := &cobra.Command{Use: "x"}
+	root.AddCommand(sub)
+	sub.SetContext(context.Background())
+	return sub
 }
 
 func TestWithGlobalHooksTeardownRunsOnSuccess(t *testing.T) {

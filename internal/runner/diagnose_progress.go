@@ -66,12 +66,13 @@ func packagePatternsFromEnd(args []string) []string {
 }
 
 type parallelDiagnoseProgress struct {
-	mu              sync.Mutex
-	renderMu        sync.Mutex
-	totalIterations int
-	completed       int
-	active          map[int]parallelIterationProgress
-	poolStartedAt   time.Time
+	mu                          sync.Mutex
+	renderMu                    sync.Mutex
+	totalIterations             int
+	completed                   int
+	active                      map[int]parallelIterationProgress
+	poolStartedAt               time.Time
+	poolElapsedAtLastCompletion time.Duration // frozen wall at last finish; ETA only
 }
 
 type parallelIterationProgress struct {
@@ -112,6 +113,7 @@ func (p *parallelDiagnoseProgress) finish(iteration int) {
 	defer p.mu.Unlock()
 	delete(p.active, iteration)
 	p.completed++
+	p.poolElapsedAtLastCompletion = max(time.Since(p.poolStartedAt), 0).Round(time.Second)
 }
 
 func (p *parallelDiagnoseProgress) withRenderLock(fn func()) {
@@ -139,13 +141,13 @@ func diagnoseWithRenderLock(parallelProgress *parallelDiagnoseProgress, serialPr
 }
 
 // renderSnapshot returns completed iteration count, total planned iterations,
-// per-active-iteration elapsed (sorted by iteration index), and wall time since
-// the parallel pool began.
+// per-active-iteration elapsed (sorted by iteration index), wall time since the
+// parallel pool began, and wall time recorded at the last completion (for ETA).
 func (p *parallelDiagnoseProgress) renderSnapshot(
 	now time.Time,
-) (completed, total int, actives []activeIterElapsed, poolElapsed time.Duration) {
+) (completed, total int, actives []activeIterElapsed, poolElapsed, completedWall time.Duration) {
 	if p == nil {
-		return 0, 0, nil, 0
+		return 0, 0, nil, 0, 0
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -153,6 +155,7 @@ func (p *parallelDiagnoseProgress) renderSnapshot(
 	total = p.totalIterations
 	poolElapsed = max(now.Sub(p.poolStartedAt), 0)
 	poolElapsed = poolElapsed.Round(time.Second)
+	completedWall = p.poolElapsedAtLastCompletion
 	for iter, pr := range p.active {
 		elapsed := max(now.Sub(pr.startedAt), 0)
 		actives = append(actives, activeIterElapsed{iteration: iter, elapsed: elapsed.Round(time.Second)})
@@ -160,7 +163,7 @@ func (p *parallelDiagnoseProgress) renderSnapshot(
 	slices.SortFunc(actives, func(a, b activeIterElapsed) int {
 		return a.iteration - b.iteration
 	})
-	return completed, total, actives, poolElapsed
+	return completed, total, actives, poolElapsed, completedWall
 }
 
 // progressBracket wraps inner (already styled) in muted square brackets.
@@ -209,7 +212,7 @@ func renderParallelDiagnoseProgressLine(w io.Writer, prog *parallelDiagnoseProgr
 	if !liveInline || prog == nil {
 		return
 	}
-	completed, totalIters, actives, poolElapsed := prog.renderSnapshot(now)
+	completed, totalIters, actives, poolElapsed, completedWall := prog.renderSnapshot(now)
 	line := progressBracket(termstyle.Label.Render(fmt.Sprintf("%d/%d", completed, totalIters)))
 	if len(actives) > 0 {
 		var sb strings.Builder
@@ -223,8 +226,14 @@ func renderParallelDiagnoseProgressLine(w io.Writer, prog *parallelDiagnoseProgr
 	}
 	line += "  " + progressBracket(termstyle.Muted.Render(poolElapsed.String()))
 	if completed > 0 && totalIters > completed {
+		// completedWall is frozen at the last finish so in-flight pool growth
+		// does not inflate avgPerIter each tick (~ETA counts up), mirroring serial.
+		wallForETA := completedWall
+		if wallForETA <= 0 {
+			wallForETA = poolElapsed
+		}
 		remaining := totalIters - completed
-		estimated := time.Duration(remaining) * poolElapsed / time.Duration(completed)
+		estimated := time.Duration(remaining) * wallForETA / time.Duration(completed)
 		if estimated > 0 {
 			line += formatETA(estimated)
 		}

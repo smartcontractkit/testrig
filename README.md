@@ -42,6 +42,9 @@ Run setup and teardown scripts during your test lifecycle.
 ### CLI
 
 ```sh
+# Vanilla go test with global hooks
+testrig --global-setup "docker compose up -d" -v -count=1 ./...
+
 # Spin up dependencies before any test, tear down after
 testrig diagnose --iterations 10 \
   --global-setup "docker compose up -d" \

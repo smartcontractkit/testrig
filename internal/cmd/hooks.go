@@ -13,11 +13,12 @@ import (
 func withGlobalHooks(fn func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) (err error) {
 		ctx := cmd.Context()
-		if err := hooks.RunGlobalSetups(ctx, cmd.Flags(), runnerOpts); err != nil {
+		flags := cmd.Root().PersistentFlags()
+		if err := hooks.RunGlobalSetups(ctx, flags, runnerOpts); err != nil {
 			return err
 		}
 		defer func() {
-			if tdErr := hooks.RunGlobalTeardowns(ctx, cmd.Flags(), runnerOpts); tdErr != nil {
+			if tdErr := hooks.RunGlobalTeardowns(ctx, flags, runnerOpts); tdErr != nil {
 				err = errors.Join(err, tdErr)
 			}
 		}()

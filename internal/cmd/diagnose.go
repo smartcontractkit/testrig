@@ -21,10 +21,9 @@ prepends "go test -json" (duplicate -json in your arguments is ignored) and adds
 when you omit -count or use -count=1. Prefer diagnose --iterations for repetition; you may
 use -count>1 to repeat inside one go test invocation. With --shuffle-seed, a per-iteration
 -shuffle=<seed> is appended.`,
-	Example: `# Run the full test suite 10 times.
-testrig diagnose --iterations 10 -- ./...`,
-	Args: cobra.MinimumNArgs(1),
-	RunE: withGlobalHooks(func(cmd *cobra.Command, args []string) error {
+	Example: "",
+	Args:    cobra.MinimumNArgs(1),
+	RunE: withGlobalHooks(func(cmd *cobra.Command, args []string) (err error) {
 		conf, err := config.Load(cmd)
 		if err != nil {
 			return err
@@ -39,11 +38,21 @@ testrig diagnose --iterations 10 -- ./...`,
 			return err
 		}
 
+		resources, cleanup, err := provisionResources(
+			cmd.Context(),
+			runnerOpts,
+			runner.EffectiveParallelIterations(conf),
+		)
+		if err != nil {
+			return err
+		}
+		defer func() { finishResourceCleanup(&err, cleanup) }()
+
 		shell := conf.ShellCommand
 		iterSetup := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseSetup)
 		iterTeardown := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseTeardown)
 
-		return runner.Diagnose(cmd.Context(), conf, out, args, iterSetup, iterTeardown)
+		return runner.Diagnose(cmd.Context(), conf, out, args, resources, iterSetup, iterTeardown)
 	}),
 }
 

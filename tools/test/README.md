@@ -1,6 +1,6 @@
 # Native Go testrig hooks
 
-Define test lifecycle hooks in Go instead of shell flags by building a small `main` package. The binary is a full testrig CLI (`run`, `gotestsum`, `diagnose`) with your hooks wired in.
+Define test lifecycle hooks in Go instead of shell flags by building a small `main` package. The binary is a full testrig CLI (default `go test`, `gotestsum`, `diagnose`) with your hooks wired in.
 
 ## Why
 
@@ -91,8 +91,10 @@ go mod tidy
 
 ```sh
 go tool test diagnose --iterations 5 -- ./...
-go tool test run -v -count=1 ./...
+go tool test -v -count=1 ./...
 ```
+
+The `run` subcommand was removed; pass `go test` flags directly after the tool name.
 
 **Alternative** — without a `tool` line (or when debugging the binary):
 

@@ -12,7 +12,7 @@ import (
 type Scope uint8
 
 const (
-	// ScopeGlobal hooks run for run, gotestsum, and diagnose.
+	// ScopeGlobal hooks run for the default go test invocation, gotestsum, and diagnose.
 	ScopeGlobal Scope = iota
 	// ScopeIteration hooks run only for diagnose iterations.
 	ScopeIteration
