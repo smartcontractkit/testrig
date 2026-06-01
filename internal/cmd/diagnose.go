@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -48,14 +46,7 @@ use -count>1 to repeat inside one go test invocation. With --shuffle-seed, a per
 		if err != nil {
 			return err
 		}
-		defer func() {
-			if cerr := cleanup(); cerr != nil {
-				fmt.Fprintf(os.Stderr, "%s: resource cleanup failed: %v\n", cliName, cerr)
-				if err == nil {
-					err = cerr
-				}
-			}
-		}()
+		defer func() { finishResourceCleanup(&err, cleanup) }()
 
 		shell := conf.ShellCommand
 		iterSetup := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseSetup)

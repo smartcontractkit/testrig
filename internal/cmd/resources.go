@@ -4,10 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/smartcontractkit/testrig/internal/hooks"
 )
+
+// finishResourceCleanup runs cleanup after a command. On failure it logs to stderr
+// and sets *err when the command itself succeeded.
+func finishResourceCleanup(err *error, cleanup func() error) {
+	if cleanup == nil {
+		return
+	}
+	if cerr := cleanup(); cerr != nil {
+		fmt.Fprintf(os.Stderr, "%s: resource cleanup failed: %v\n", cliName, cerr)
+		if *err == nil {
+			*err = cerr
+		}
+	}
+}
 
 // provisionResources invokes the configured resource provider for count
 // resources and returns them with a cleanup that tears each one down. When no

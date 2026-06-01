@@ -59,10 +59,10 @@ func IterationTeardown(h Hook) Option {
 }
 
 // WithResources registers a provider that supplies isolated infrastructure
-// (e.g. databases) for the run. The provider is called once with the number of
-// resources needed: the effective parallel-iteration count for diagnose, or 1
-// for the default go test invocation and gotestsum. Each resource's Env is applied to the child go test
-// process; Reset, DumpDiagnostics, and Cleanup are invoked over its lifecycle.
+// (e.g. databases) for the run. See ResourceProvider for count semantics and
+// partial-failure behavior. Each resource's Env is appended to the child go test
+// process; Reset and DumpDiagnostics apply during diagnose; Cleanup runs once
+// after the command finishes.
 func WithResources(p ResourceProvider) Option {
 	return hooks.WithResources(p)
 }

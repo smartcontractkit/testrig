@@ -14,6 +14,39 @@ import (
 	"github.com/smartcontractkit/testrig/internal/hooks"
 )
 
+func TestResourceEnvReturnsProviderEnv(t *testing.T) {
+	t.Parallel()
+	want := []string{"TESTRIG_TEST_ENV=1"}
+	opts := hooks.RunOptions{
+		ResourceProvider: func(context.Context, int) ([]hooks.Resource, error) {
+			return []hooks.Resource{{Env: want}}, nil
+		},
+	}
+	env, cleanup, err := resourceEnv(context.Background(), opts)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, cleanup()) }()
+	assert.Equal(t, want, env)
+}
+
+func TestFinishResourceCleanup(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sets err when run succeeded", func(t *testing.T) {
+		t.Parallel()
+		var err error
+		finishResourceCleanup(&err, func() error { return errors.New("cleanup") })
+		require.Error(t, err)
+	})
+
+	t.Run("preserves run error", func(t *testing.T) {
+		t.Parallel()
+		runErr := errors.New("run")
+		err := runErr
+		finishResourceCleanup(&err, func() error { return errors.New("cleanup") })
+		require.ErrorIs(t, err, runErr)
+	})
+}
+
 func TestProvisionResourcesNilProviderIsNoop(t *testing.T) {
 	t.Parallel()
 	res, cleanup, err := provisionResources(context.Background(), hooks.RunOptions{}, 1)

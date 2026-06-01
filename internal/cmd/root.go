@@ -3,7 +3,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -42,14 +41,7 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer func() {
-			if cerr := cleanup(); cerr != nil {
-				fmt.Fprintf(os.Stderr, "%s: resource cleanup failed: %v\n", cliName, cerr)
-				if err == nil {
-					err = cerr
-				}
-			}
-		}()
+		defer func() { finishResourceCleanup(&err, cleanup) }()
 		return runner.GoTest(cmd.Context(), conf, goTestArgs, env)
 	}),
 }

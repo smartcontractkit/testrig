@@ -1,9 +1,6 @@
 package cmd
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/spf13/cobra"
 
 	"github.com/smartcontractkit/testrig/internal/config"
@@ -26,14 +23,7 @@ var gotestsumCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer func() {
-			if cerr := cleanup(); cerr != nil {
-				fmt.Fprintf(os.Stderr, "%s: resource cleanup failed: %v\n", cliName, cerr)
-				if err == nil {
-					err = cerr
-				}
-			}
-		}()
+		defer func() { finishResourceCleanup(&err, cleanup) }()
 		return runner.Gotestsum(cmd.Context(), conf, args, env)
 	}),
 }

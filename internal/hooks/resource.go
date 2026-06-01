@@ -19,7 +19,15 @@ type Resource struct {
 	Cleanup         func() error
 }
 
-// ResourceProvider supplies count isolated resources for a run. For diagnose,
-// count is the effective number of parallel workers; for the default go test invocation and gotestsum it is 1.
-// It is called once, before any tests start.
+// ResourceProvider supplies count isolated resources for a run. It is called once,
+// before any tests start, with a context that is canceled on SIGINT/SIGTERM.
+//
+// count is the effective parallel-iteration count for diagnose (one resource per
+// worker, capped by --iterations). For the default root go test
+// invocation and gotestsum, count is always 1 — even when go test uses -p>1,
+// only a single Env slice is applied to the child process.
+//
+// The provider must return exactly count resources or an error. On error,
+// testrig does not call Cleanup on any returned resources; roll back partial
+// provisioning inside the provider before returning.
 type ResourceProvider func(ctx context.Context, count int) ([]Resource, error)
