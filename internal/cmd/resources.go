@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/smartcontractkit/testrig/internal/hooks"
@@ -19,6 +20,10 @@ func provisionResources(ctx context.Context, opts hooks.RunOptions, count int) (
 	resources, err := opts.ResourceProvider(ctx, count)
 	if err != nil {
 		return nil, func() error { return nil }, err
+	}
+	if len(resources) != count {
+		return nil, func() error { return nil }, fmt.Errorf(
+			"resource provider returned %d resources, want %d", len(resources), count)
 	}
 	cleanup := func() error {
 		var wg sync.WaitGroup

@@ -110,7 +110,11 @@ func WithResources(p ResourceProvider) Option {
 // for project-specific utilities (e.g. persistent database management). May be
 // passed multiple times.
 func WithCommand(cmd *cobra.Command) Option {
-	return func(o *runnerOptions) { o.commands = append(o.commands, cmd) }
+	return func(o *runnerOptions) {
+		if cmd != nil {
+			o.commands = append(o.commands, cmd)
+		}
+	}
 }
 
 // WithRootFlags registers persistent flags on the root command, available to

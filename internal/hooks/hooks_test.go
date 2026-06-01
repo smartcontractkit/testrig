@@ -162,6 +162,16 @@ func TestBuildOptionsRegistersCommands(t *testing.T) {
 	assert.Equal(t, "two", opts.Commands[1].Use)
 }
 
+func TestBuildOptionsWithCommandIgnoresNil(t *testing.T) {
+	t.Parallel()
+	opts := BuildOptions(
+		WithCommand(nil),
+		WithCommand(&cobra.Command{Use: "one"}),
+	)
+	require.Len(t, opts.Commands, 1)
+	assert.Equal(t, "one", opts.Commands[0].Use)
+}
+
 func TestBuildOptionsRegistersRootFlags(t *testing.T) {
 	t.Parallel()
 	opts := BuildOptions(WithRootFlags(func(fs *pflag.FlagSet) {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -93,6 +94,35 @@ func TestProvisionResourcesCleanupReturnsJoinedErrors(t *testing.T) {
 	err = cleanup()
 	require.ErrorIs(t, err, err1)
 	require.ErrorIs(t, err, err2)
+}
+
+func TestProvisionResourcesRejectsWrongCount(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		returned  int
+		requested int
+	}{
+		{name: "too few", returned: 1, requested: 3},
+		{name: "too many", returned: 4, requested: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			provider := func(context.Context, int) ([]hooks.Resource, error) {
+				return make([]hooks.Resource, tt.returned), nil
+			}
+			_, cleanup, err := provisionResources(
+				context.Background(),
+				hooks.RunOptions{ResourceProvider: provider},
+				tt.requested,
+			)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), fmt.Sprintf("returned %d resources, want %d", tt.returned, tt.requested))
+			require.NotNil(t, cleanup)
+			require.NoError(t, cleanup())
+		})
+	}
 }
 
 func TestProvisionResourcesCleanupRunsConcurrently(t *testing.T) {
