@@ -82,3 +82,19 @@ func goTestArgsFromRoot(cmd *cobra.Command, args []string) ([]string, error) {
 
 	return goTestArgs, nil
 }
+
+// runRootAfterParsing applies persistent root flags from args, then runs fn inside
+// withGlobalHooks so global setup/teardown see the parsed flag values. Help requests
+// return before any hooks run.
+func runRootAfterParsing(cmd *cobra.Command, args []string, fn func(remainder []string) error) error {
+	if isHelpRequest(args) {
+		return pflag.ErrHelp
+	}
+	remainder, err := goTestArgsFromRoot(cmd, args)
+	if err != nil {
+		return err
+	}
+	return withGlobalHooks(func(*cobra.Command, []string) error {
+		return fn(remainder)
+	})(cmd, args)
+}

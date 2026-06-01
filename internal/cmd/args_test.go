@@ -1,9 +1,13 @@
 package cmd
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -107,4 +111,35 @@ func TestGoTestArgsFromRoot(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunRootAfterParsingAppliesFlagsBeforeHooks(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "setup")
+	cmd := newRootArgsTestCmd(t)
+	cmd.SetContext(context.Background())
+
+	err := runRootAfterParsing(cmd, []string{"--global-setup", touchCmd(marker)}, func([]string) error {
+		return nil
+	})
+	require.NoError(t, err)
+	assert.FileExists(t, marker)
+}
+
+func TestRunRootAfterParsingHelpSkipsHooks(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "setup")
+	cmd := newRootArgsTestCmd(t)
+	cmd.SetContext(context.Background())
+
+	err := runRootAfterParsing(cmd, []string{"--global-setup", touchCmd(marker), "-h"}, func([]string) error {
+		return nil
+	})
+	require.ErrorIs(t, err, pflag.ErrHelp)
+	_, statErr := os.Stat(marker)
+	assert.True(t, os.IsNotExist(statErr))
 }

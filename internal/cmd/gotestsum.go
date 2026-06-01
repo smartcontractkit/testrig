@@ -14,16 +14,18 @@ var gotestsumCmd = &cobra.Command{
 	Long:               "",
 	Example:            "",
 	Args:               cobra.ArbitraryArgs,
-	RunE: withGlobalHooks(func(cmd *cobra.Command, args []string) (err error) {
-		conf, err := config.Load(cmd)
-		if err != nil {
-			return err
-		}
-		env, cleanup, err := resourceEnv(cmd.Context(), runnerOpts)
-		if err != nil {
-			return err
-		}
-		defer func() { finishResourceCleanup(&err, cleanup) }()
-		return runner.Gotestsum(cmd.Context(), conf, args, env)
-	}),
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		return runRootAfterParsing(cmd, args, func(gotestsumArgs []string) error {
+			conf, err := config.Load(cmd)
+			if err != nil {
+				return err
+			}
+			env, cleanup, err := resourceEnv(cmd.Context(), runnerOpts)
+			if err != nil {
+				return err
+			}
+			defer func() { finishResourceCleanup(&err, cleanup) }()
+			return runner.Gotestsum(cmd.Context(), conf, gotestsumArgs, env)
+		})
+	},
 }

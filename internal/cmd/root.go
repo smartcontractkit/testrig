@@ -10,7 +10,6 @@ import (
 	"charm.land/fang/v2"
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 
 	"github.com/smartcontractkit/testrig/internal/config"
 	"github.com/smartcontractkit/testrig/internal/hooks"
@@ -25,25 +24,20 @@ var rootCmd = &cobra.Command{
 	Long:               "",
 	Args:               cobra.ArbitraryArgs,
 	DisableFlagParsing: true,
-	RunE: withGlobalHooks(func(cmd *cobra.Command, args []string) (err error) {
-		if isHelpRequest(args) {
-			return pflag.ErrHelp
-		}
-		goTestArgs, err := goTestArgsFromRoot(cmd, args)
-		if err != nil {
-			return err
-		}
-		conf, err := config.Load(cmd)
-		if err != nil {
-			return err
-		}
-		env, cleanup, err := resourceEnv(cmd.Context(), runnerOpts)
-		if err != nil {
-			return err
-		}
-		defer func() { finishResourceCleanup(&err, cleanup) }()
-		return runner.GoTest(cmd.Context(), conf, goTestArgs, env)
-	}),
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		return runRootAfterParsing(cmd, args, func(goTestArgs []string) error {
+			conf, err := config.Load(cmd)
+			if err != nil {
+				return err
+			}
+			env, cleanup, err := resourceEnv(cmd.Context(), runnerOpts)
+			if err != nil {
+				return err
+			}
+			defer func() { finishResourceCleanup(&err, cleanup) }()
+			return runner.GoTest(cmd.Context(), conf, goTestArgs, env)
+		})
+	},
 }
 
 func init() {
