@@ -142,8 +142,16 @@ func TestProvisionResourcesRejectsWrongCount(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			var cleaned atomic.Int32
 			provider := func(context.Context, int) ([]hooks.Resource, error) {
-				return make([]hooks.Resource, tt.returned), nil
+				rs := make([]hooks.Resource, tt.returned)
+				for i := range rs {
+					rs[i] = hooks.Resource{Cleanup: func() error {
+						cleaned.Add(1)
+						return nil
+					}}
+				}
+				return rs, nil
 			}
 			_, cleanup, err := provisionResources(
 				context.Background(),
@@ -152,6 +160,7 @@ func TestProvisionResourcesRejectsWrongCount(t *testing.T) {
 			)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), fmt.Sprintf("returned %d resources, want %d", tt.returned, tt.requested))
+			assert.EqualValues(t, tt.returned, cleaned.Load(), "partial resources must be cleaned up")
 			require.NotNil(t, cleanup)
 			require.NoError(t, cleanup())
 		})

@@ -37,25 +37,26 @@ func provisionResources(ctx context.Context, opts hooks.RunOptions, count int) (
 		return nil, func() error { return nil }, err
 	}
 	if len(resources) != count {
-		return nil, func() error { return nil }, fmt.Errorf(
+		countErr := fmt.Errorf(
 			"resource provider returned %d resources, want %d", len(resources), count)
+		return nil, func() error { return nil }, errors.Join(countErr, cleanupResources(resources))
 	}
-	cleanup := func() error {
-		var wg sync.WaitGroup
-		errs := make([]error, len(resources))
-		for i, r := range resources {
-			if r.Cleanup != nil {
-				wg.Add(1)
-				go func(i int, r hooks.Resource) {
-					defer wg.Done()
-					errs[i] = r.Cleanup()
-				}(i, r)
-			}
-		}
-		wg.Wait()
-		return errors.Join(errs...)
-	}
+	cleanup := func() error { return cleanupResources(resources) }
 	return resources, cleanup, nil
+}
+
+func cleanupResources(resources []hooks.Resource) error {
+	var wg sync.WaitGroup
+	errs := make([]error, len(resources))
+	for i, r := range resources {
+		if r.Cleanup != nil {
+			wg.Go(func() {
+				errs[i] = r.Cleanup()
+			})
+		}
+	}
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 // resourceEnv provisions a single resource (count == 1) for the default go test
