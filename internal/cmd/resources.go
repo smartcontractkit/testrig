@@ -43,8 +43,8 @@ func provisionResources(ctx context.Context, opts hooks.RunOptions, count int) (
 	return resources, cleanup, nil
 }
 
-// resourceEnv provisions a single resource (count == 1) for the run/gotestsum
-// subcommands and returns its Env to append to the child process, plus a
+// resourceEnv provisions a single resource (count == 1) for the default go test
+// invocation and gotestsum, and returns its Env to append to the child process, plus a
 // cleanup to defer. When no provider is configured it returns nil env and a
 // no-op cleanup.
 func resourceEnv(ctx context.Context, opts hooks.RunOptions) ([]string, func() error, error) {

@@ -14,15 +14,10 @@ var gotestsumCmd = &cobra.Command{
 	Use:                "gotestsum [gotestsum flags] [-- go test flags]",
 	DisableFlagParsing: true,
 	Short:              "Run tests with gotestsum",
-	Long: `Runs gotestsum from the repo root.
-
-Because this subcommand does not parse flags, global options (--ai-output) must appear
-on the root command before gotestsum, for example:
-  testrig --ai-output gotestsum --format=testname -- -count=1 ./...`,
-	Example: `testrig gotestsum --format=dots -- -count=1 ./...
-testrig --ai-output gotestsum --format=testname -- -count=1 ./...`,
-	Args: cobra.ArbitraryArgs,
-	RunE: withGlobalHooks(func(cmd *cobra.Command, args []string) error {
+	Long:               "",
+	Example:            "",
+	Args:               cobra.ArbitraryArgs,
+	RunE: withGlobalHooks(func(cmd *cobra.Command, args []string) (err error) {
 		conf, err := config.Load(cmd)
 		if err != nil {
 			return err
@@ -33,7 +28,10 @@ testrig --ai-output gotestsum --format=testname -- -count=1 ./...`,
 		}
 		defer func() {
 			if cerr := cleanup(); cerr != nil {
-				fmt.Fprintf(os.Stderr, "testrig: resource cleanup failed: %v\n", cerr)
+				fmt.Fprintf(os.Stderr, "%s: resource cleanup failed: %v\n", cliName, cerr)
+				if err == nil {
+					err = cerr
+				}
 			}
 		}()
 		return runner.Gotestsum(cmd.Context(), conf, args, env)

@@ -183,3 +183,15 @@ func TestBuildOptionsRegistersRootFlags(t *testing.T) {
 	opts.RootFlags(fs)
 	assert.NotNil(t, fs.Lookup("database-url"))
 }
+
+func TestBuildOptionsRegistersRootCommand(t *testing.T) {
+	t.Parallel()
+	opts := BuildOptions(WithRootCommand("cltest"))
+	assert.Equal(t, "cltest", opts.RootCommand)
+}
+
+func TestBuildOptionsRootCommandDefaultEmpty(t *testing.T) {
+	t.Parallel()
+	opts := BuildOptions()
+	assert.Empty(t, opts.RootCommand)
+}

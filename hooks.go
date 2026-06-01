@@ -61,7 +61,7 @@ func IterationTeardown(h Hook) Option {
 // WithResources registers a provider that supplies isolated infrastructure
 // (e.g. databases) for the run. The provider is called once with the number of
 // resources needed: the effective parallel-iteration count for diagnose, or 1
-// for run/gotestsum. Each resource's Env is applied to the child go test
+// for the default go test invocation and gotestsum. Each resource's Env is applied to the child go test
 // process; Reset, DumpDiagnostics, and Cleanup are invoked over its lifecycle.
 func WithResources(p ResourceProvider) Option {
 	return hooks.WithResources(p)
@@ -78,6 +78,12 @@ func WithCommand(cmd *cobra.Command) Option {
 // resource provider or custom command reads.
 func WithRootFlags(register func(*pflag.FlagSet)) Option {
 	return hooks.WithRootFlags(register)
+}
+
+// WithRootCommand sets the CLI name used in help text, examples, and
+// cobra.CommandPath(). Defaults to "testrig" when unset.
+func WithRootCommand(name string) Option {
+	return hooks.WithRootCommand(name)
 }
 
 // BuildOptions evaluates the functional options and returns the internal struct.

@@ -73,6 +73,7 @@ type runnerOptions struct {
 	resourceProvider  ResourceProvider
 	commands          []*cobra.Command
 	rootFlags         func(*pflag.FlagSet)
+	rootCommand       string
 }
 
 // Option configures the testrig CLI runner.
@@ -101,7 +102,7 @@ func IterationTeardown(h Hook) Option {
 // WithResources registers a provider that supplies isolated infrastructure
 // (e.g. databases) for the run. The provider is called once with the number of
 // resources needed: the effective parallel-iteration count for diagnose, or 1
-// for run/gotestsum.
+// for the default go test invocation and gotestsum.
 func WithResources(p ResourceProvider) Option {
 	return func(o *runnerOptions) { o.resourceProvider = p }
 }
@@ -124,6 +125,12 @@ func WithRootFlags(register func(*pflag.FlagSet)) Option {
 	return func(o *runnerOptions) { o.rootFlags = register }
 }
 
+// WithRootCommand sets the CLI name used in help text, examples, and
+// cobra.CommandPath(). Defaults to "testrig" when unset.
+func WithRootCommand(name string) Option {
+	return func(o *runnerOptions) { o.rootCommand = name }
+}
+
 // RunOptions contains the evaluated configuration for the testrig CLI.
 // It is exported for internal use by the CLI engine.
 type RunOptions struct {
@@ -134,6 +141,7 @@ type RunOptions struct {
 	ResourceProvider  ResourceProvider
 	Commands          []*cobra.Command
 	RootFlags         func(*pflag.FlagSet)
+	RootCommand       string
 }
 
 // BuildOptions evaluates the functional options and returns the internal struct.
@@ -151,5 +159,6 @@ func BuildOptions(opts ...Option) RunOptions {
 		ResourceProvider:  o.resourceProvider,
 		Commands:          o.commands,
 		RootFlags:         o.rootFlags,
+		RootCommand:       o.rootCommand,
 	}
 }

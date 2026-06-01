@@ -3,6 +3,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,36 +11,55 @@ import (
 	"charm.land/fang/v2"
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
+	"github.com/smartcontractkit/testrig/internal/config"
 	"github.com/smartcontractkit/testrig/internal/hooks"
+	"github.com/smartcontractkit/testrig/internal/runner"
 )
 
 var runnerOpts hooks.RunOptions
 
 var rootCmd = &cobra.Command{
-	Use:   "testrig",
-	Short: "Run Go tests with complex setups and teardowns with a single command",
-	Long: `Run Go tests with a single command.
-
-Modes:
-
-- run: Run tests using vanilla go test command and arguments
-- gotestsum: Run tests using gotestsum for those that prefer its output and tools
-- diagnose: Run tests multiple times to collect statistics, debug logs, and more to help find flakes, races, panics, timeouts, and other issues`,
-	Example: `# Use vanilla go test commands
-testrig run -v -count=1 -p 4 ./...
-# Use gotestsum as the runner
-testrig gotestsum --format=dots -- -count=1 ./...
-# Run the full test suite 10 times and collect statistics, debug logs, and more
-testrig diagnose --iterations 10 -- --timeout=15m ./...`,
+	Use:                defaultRootCommandName,
+	Short:              "Run Go tests with complex setups and teardowns with a single command",
+	Long:               "",
+	Args:               cobra.ArbitraryArgs,
+	DisableFlagParsing: true,
+	RunE: withGlobalHooks(func(cmd *cobra.Command, args []string) (err error) {
+		if isHelpRequest(args) {
+			return pflag.ErrHelp
+		}
+		goTestArgs, err := goTestArgsFromRoot(cmd, args)
+		if err != nil {
+			return err
+		}
+		conf, err := config.Load(cmd)
+		if err != nil {
+			return err
+		}
+		env, cleanup, err := resourceEnv(cmd.Context(), runnerOpts)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if cerr := cleanup(); cerr != nil {
+				fmt.Fprintf(os.Stderr, "%s: resource cleanup failed: %v\n", cliName, cerr)
+				if err == nil {
+					err = cerr
+				}
+			}
+		}()
+		return runner.GoTest(cmd.Context(), conf, goTestArgs, env)
+	}),
 }
 
 func init() {
+	applyRootCommand("")
 	rootCmd.PersistentFlags().
 		Bool("ai-output", !term.IsTerminal(os.Stdout.Fd()), "Use sparse output for agent tooling (and robotic humans)")
 	hooks.RegisterPersistentFlags(rootCmd.PersistentFlags())
 
-	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(gotestsumCmd)
 	rootCmd.AddCommand(diagnoseCmd)
 }
@@ -50,6 +70,7 @@ func init() {
 // force-exits.
 func Execute(opts ...hooks.Option) {
 	runnerOpts = hooks.BuildOptions(opts...)
+	applyRootCommand(runnerOpts.RootCommand)
 	if runnerOpts.RootFlags != nil {
 		runnerOpts.RootFlags(rootCmd.PersistentFlags())
 	}
@@ -57,7 +78,11 @@ func Execute(opts ...hooks.Option) {
 		rootCmd.AddCommand(c)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	fangOpts := []fang.Option{fang.WithoutCompletions()}
+	fangOpts := []fang.Option{
+		fang.WithoutCompletions(),
+		// Root forwards unknown flags (including go test -v) to go test; fang's -v is version.
+		fang.WithoutVersion(),
+	}
 	if err := fang.Execute(ctx, rootCmd, fangOpts...); err != nil {
 		stop()
 		os.Exit(1)

@@ -20,6 +20,6 @@ type Resource struct {
 }
 
 // ResourceProvider supplies count isolated resources for a run. For diagnose,
-// count is the effective number of parallel workers; for run/gotestsum it is 1.
+// count is the effective number of parallel workers; for the default go test invocation and gotestsum it is 1.
 // It is called once, before any tests start.
 type ResourceProvider func(ctx context.Context, count int) ([]Resource, error)
