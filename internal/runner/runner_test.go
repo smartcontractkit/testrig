@@ -44,6 +44,7 @@ func TestDiagnoseCanceledCtxRunsNoIterationsButStillWritesReport(t *testing.T) {
 		[]string{"./..."},
 		nil,
 		nil,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -88,6 +89,7 @@ func TestDiagnoseCanceledCtxAIStdoutCompleteEvent(t *testing.T) {
 		[]string{"./..."},
 		nil,
 		nil,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -114,7 +116,7 @@ func TestDiagnoseHumanModeFooterShowsReportJSONPath(t *testing.T) {
 	cancel()
 
 	var stderr strings.Builder
-	err := Diagnose(ctx, conf, output.NewForTest(false, io.Discard, &stderr, false), []string{"./..."}, nil, nil)
+	err := Diagnose(ctx, conf, output.NewForTest(false, io.Discard, &stderr, false), []string{"./..."}, nil, nil, nil)
 	require.NoError(t, err)
 
 	matches, err := filepath.Glob(filepath.Join(repoRoot, diagnoseResultsNamePrefix+"*"))
@@ -519,6 +521,7 @@ func TestDiagnoseShuffleSeedsAbsentWhenNoIterationsRun(t *testing.T) {
 			conf,
 			output.NewForTest(conf.AIOutput, io.Discard, io.Discard, false),
 			[]string{"./..."},
+			nil,
 			nil,
 			nil,
 		),

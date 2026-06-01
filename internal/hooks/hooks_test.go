@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -140,4 +142,34 @@ func TestBuildOptionsRegistersHooks(t *testing.T) {
 	require.NotNil(t, opts.GlobalTeardown)
 	require.NotNil(t, opts.IterationSetup)
 	require.NotNil(t, opts.IterationTeardown)
+}
+
+func TestBuildOptionsRegistersResourceProvider(t *testing.T) {
+	t.Parallel()
+	provider := func(context.Context, int) ([]Resource, error) { return nil, nil }
+	opts := BuildOptions(WithResources(provider))
+	require.NotNil(t, opts.ResourceProvider)
+}
+
+func TestBuildOptionsRegistersCommands(t *testing.T) {
+	t.Parallel()
+	opts := BuildOptions(
+		WithCommand(&cobra.Command{Use: "one"}),
+		WithCommand(&cobra.Command{Use: "two"}),
+	)
+	require.Len(t, opts.Commands, 2)
+	assert.Equal(t, "one", opts.Commands[0].Use)
+	assert.Equal(t, "two", opts.Commands[1].Use)
+}
+
+func TestBuildOptionsRegistersRootFlags(t *testing.T) {
+	t.Parallel()
+	opts := BuildOptions(WithRootFlags(func(fs *pflag.FlagSet) {
+		fs.String("database-url", "", "")
+	}))
+	require.NotNil(t, opts.RootFlags)
+
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	opts.RootFlags(fs)
+	assert.NotNil(t, fs.Lookup("database-url"))
 }

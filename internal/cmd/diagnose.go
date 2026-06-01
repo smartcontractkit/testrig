@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -39,11 +41,25 @@ testrig diagnose --iterations 10 -- ./...`,
 			return err
 		}
 
+		resources, cleanup, err := provisionResources(
+			cmd.Context(),
+			runnerOpts,
+			runner.EffectiveParallelIterations(conf),
+		)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if cerr := cleanup(); cerr != nil {
+				fmt.Fprintf(os.Stderr, "testrig: resource cleanup failed: %v\n", cerr)
+			}
+		}()
+
 		shell := conf.ShellCommand
 		iterSetup := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseSetup)
 		iterTeardown := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseTeardown)
 
-		return runner.Diagnose(cmd.Context(), conf, out, args, iterSetup, iterTeardown)
+		return runner.Diagnose(cmd.Context(), conf, out, args, resources, iterSetup, iterTeardown)
 	}),
 }
 

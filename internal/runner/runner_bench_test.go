@@ -77,7 +77,7 @@ func diagnoseWorkload(
 		ParallelIterations: parallel,
 		SlowThreshold:      time.Second,
 	}
-	return Diagnose(ctx, conf, out, []string{target}, nil, nil)
+	return Diagnose(ctx, conf, out, []string{target}, nil, nil, nil)
 }
 
 func envWithoutKey(env []string, key string) []string {

@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/spf13/cobra"
 
 	"github.com/smartcontractkit/testrig/internal/config"
@@ -24,6 +27,15 @@ on the root command before run, for example:
 		if err != nil {
 			return err
 		}
-		return runner.GoTest(cmd.Context(), conf, args)
+		env, cleanup, err := resourceEnv(cmd.Context(), runnerOpts)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if cerr := cleanup(); cerr != nil {
+				fmt.Fprintf(os.Stderr, "testrig: resource cleanup failed: %v\n", cerr)
+			}
+		}()
+		return runner.GoTest(cmd.Context(), conf, args, env)
 	}),
 }

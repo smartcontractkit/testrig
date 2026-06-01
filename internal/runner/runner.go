@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/smartcontractkit/testrig/internal/config"
+	"github.com/smartcontractkit/testrig/internal/hooks"
 	"github.com/smartcontractkit/testrig/internal/output"
 	"github.com/smartcontractkit/testrig/internal/termstyle"
 )
@@ -63,7 +64,7 @@ type diagnoseRunState struct {
 	liveProgress        bool
 }
 
-func runCommand(ctx context.Context, conf *config.App, binary string, args []string) error {
+func runCommand(ctx context.Context, conf *config.App, binary string, args []string, env []string) error {
 	dir, args, err := resolveModuleDir(conf.RepoRoot, args)
 	if err != nil {
 		return err
@@ -74,21 +75,23 @@ func runCommand(ctx context.Context, conf *config.App, binary string, args []str
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), env...)
 	return cmd.Run()
 }
 
 // GoTest runs `go test` with the given args (repo root as working directory).
-func GoTest(ctx context.Context, conf *config.App, args []string) error {
-	return runCommand(ctx, conf, "go", append([]string{"test"}, args...))
+// env is appended to the child process environment (e.g. resource Env).
+func GoTest(ctx context.Context, conf *config.App, args []string, env []string) error {
+	return runCommand(ctx, conf, "go", append([]string{"test"}, args...), env)
 }
 
 // Gotestsum runs `gotestsum` with the given args (repo root as working directory).
-func Gotestsum(ctx context.Context, conf *config.App, args []string) error {
+// env is appended to the child process environment (e.g. resource Env).
+func Gotestsum(ctx context.Context, conf *config.App, args []string, env []string) error {
 	if _, err := exec.LookPath("gotestsum"); err != nil {
 		return fmt.Errorf("gotestsum not on PATH: install with go install gotest.tools/gotestsum@latest: %w", err)
 	}
-	return runCommand(ctx, conf, "gotestsum", args)
+	return runCommand(ctx, conf, "gotestsum", args, env)
 }
 
 // Diagnose runs go test -json once per iteration, writing each stream to
@@ -108,6 +111,7 @@ func Diagnose(
 	conf *config.App,
 	out *output.Printer,
 	goTestArgs []string,
+	resources []hooks.Resource,
 	iterSetup, iterTeardown func(context.Context) error,
 ) error {
 	if out == nil {
@@ -128,7 +132,15 @@ func Diagnose(
 		iterationSetup:    iterSetup,
 		iterationTeardown: iterTeardown,
 	}
-	state, runErr := runDiagnoseIterations(ctx, conf, out, resultsDir, goTestArgs, nil, iterHooks)
+	state, runErr := runDiagnoseIterations(
+		ctx,
+		conf,
+		out,
+		resultsDir,
+		goTestArgs,
+		toIterationResources(resources),
+		iterHooks,
+	)
 	if runErr != nil {
 		if ctx.Err() == nil {
 			return runErr

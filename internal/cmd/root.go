@@ -50,6 +50,12 @@ func init() {
 // force-exits.
 func Execute(opts ...hooks.Option) {
 	runnerOpts = hooks.BuildOptions(opts...)
+	if runnerOpts.RootFlags != nil {
+		runnerOpts.RootFlags(rootCmd.PersistentFlags())
+	}
+	for _, c := range runnerOpts.Commands {
+		rootCmd.AddCommand(c)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	fangOpts := []fang.Option{fang.WithoutCompletions()}
 	if err := fang.Execute(ctx, rootCmd, fangOpts...); err != nil {

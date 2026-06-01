@@ -6,6 +6,9 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // Hook is a lifecycle callback. The context carries cancellation from the
@@ -67,6 +70,9 @@ type runnerOptions struct {
 	globalTeardown    Hook
 	iterationSetup    Hook
 	iterationTeardown Hook
+	resourceProvider  ResourceProvider
+	commands          []*cobra.Command
+	rootFlags         func(*pflag.FlagSet)
 }
 
 // Option configures the testrig CLI runner.
@@ -92,6 +98,28 @@ func IterationTeardown(h Hook) Option {
 	return func(o *runnerOptions) { o.iterationTeardown = h }
 }
 
+// WithResources registers a provider that supplies isolated infrastructure
+// (e.g. databases) for the run. The provider is called once with the number of
+// resources needed: the effective parallel-iteration count for diagnose, or 1
+// for run/gotestsum.
+func WithResources(p ResourceProvider) Option {
+	return func(o *runnerOptions) { o.resourceProvider = p }
+}
+
+// WithCommand registers an additional subcommand on the testrig root command,
+// for project-specific utilities (e.g. persistent database management). May be
+// passed multiple times.
+func WithCommand(cmd *cobra.Command) Option {
+	return func(o *runnerOptions) { o.commands = append(o.commands, cmd) }
+}
+
+// WithRootFlags registers persistent flags on the root command, available to
+// every subcommand. Use it to add consumer flags (e.g. --database-url) that a
+// resource provider or custom command reads.
+func WithRootFlags(register func(*pflag.FlagSet)) Option {
+	return func(o *runnerOptions) { o.rootFlags = register }
+}
+
 // RunOptions contains the evaluated configuration for the testrig CLI.
 // It is exported for internal use by the CLI engine.
 type RunOptions struct {
@@ -99,6 +127,9 @@ type RunOptions struct {
 	GlobalTeardown    Hook
 	IterationSetup    Hook
 	IterationTeardown Hook
+	ResourceProvider  ResourceProvider
+	Commands          []*cobra.Command
+	RootFlags         func(*pflag.FlagSet)
 }
 
 // BuildOptions evaluates the functional options and returns the internal struct.
@@ -113,5 +144,8 @@ func BuildOptions(opts ...Option) RunOptions {
 		GlobalTeardown:    o.globalTeardown,
 		IterationSetup:    o.iterationSetup,
 		IterationTeardown: o.iterationTeardown,
+		ResourceProvider:  o.resourceProvider,
+		Commands:          o.commands,
+		RootFlags:         o.rootFlags,
 	}
 }

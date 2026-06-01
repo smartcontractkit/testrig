@@ -5,6 +5,9 @@
 package testrig
 
 import (
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
 	"github.com/smartcontractkit/testrig/internal/cmd"
 	"github.com/smartcontractkit/testrig/internal/hooks"
 )
@@ -19,6 +22,13 @@ type Option = hooks.Option
 // RunOptions contains the evaluated configuration for the testrig CLI.
 // It is exported for internal use by the CLI engine.
 type RunOptions = hooks.RunOptions
+
+// Resource is one prepared, isolated piece of infrastructure (e.g. a database)
+// supplied by a ResourceProvider. See hooks.Resource for field semantics.
+type Resource = hooks.Resource
+
+// ResourceProvider supplies isolated resources for a run. See WithResources.
+type ResourceProvider = hooks.ResourceProvider
 
 // GlobalSetup registers a hook to run once before any tests.
 func GlobalSetup(h Hook) Option {
@@ -46,6 +56,28 @@ func IterationSetup(h Hook) Option {
 // IterationTeardown registers a hook to run after each diagnose iteration.
 func IterationTeardown(h Hook) Option {
 	return hooks.IterationTeardown(h)
+}
+
+// WithResources registers a provider that supplies isolated infrastructure
+// (e.g. databases) for the run. The provider is called once with the number of
+// resources needed: the effective parallel-iteration count for diagnose, or 1
+// for run/gotestsum. Each resource's Env is applied to the child go test
+// process; Reset, DumpDiagnostics, and Cleanup are invoked over its lifecycle.
+func WithResources(p ResourceProvider) Option {
+	return hooks.WithResources(p)
+}
+
+// WithCommand registers an additional subcommand on the testrig root command,
+// for project-specific utilities (e.g. persistent database management).
+func WithCommand(cmd *cobra.Command) Option {
+	return hooks.WithCommand(cmd)
+}
+
+// WithRootFlags registers persistent flags on the root command, available to
+// every subcommand. Use it to add consumer flags (e.g. --database-url) that a
+// resource provider or custom command reads.
+func WithRootFlags(register func(*pflag.FlagSet)) Option {
+	return hooks.WithRootFlags(register)
 }
 
 // BuildOptions evaluates the functional options and returns the internal struct.
