@@ -63,7 +63,7 @@ func TestRenderDiagnoseProgressLine_etaShownWhenCompletionsExist(t *testing.T) {
 	got := b.String()
 	require.Contains(t, got, "iter 3/5")
 	require.Contains(t, got, "left")
-	require.Contains(t, got, "~")
+	require.Equal(t, "1m15s", extractDiagnoseETADuration(lineWithoutANSI(got)))
 }
 
 func TestRenderDiagnoseProgressLine_etaStableWhileIterationAdvances(t *testing.T) {
@@ -155,11 +155,41 @@ func TestRenderParallelDiagnoseProgressLine_etaShownWhenCompletionsExist(t *test
 	now := t0.Add(60 * time.Second)
 	p := newParallelDiagnoseProgressAt(10, t0)
 	p.completed = 2 // 2 completed in 60s → avg 30s, remaining 8 → ~240s=4m0s
+	p.poolElapsedAtLastCompletion = 60 * time.Second
 	renderParallelDiagnoseProgressLine(&b, p, now, true)
 	got := b.String()
 	require.Contains(t, got, "2/10")
 	require.Contains(t, got, "left")
-	require.Contains(t, got, "~")
+	require.Equal(t, "4m0s", extractDiagnoseETADuration(lineWithoutANSI(got)))
+}
+
+func TestRenderParallelDiagnoseProgressLine_etaStableWhileIterationAdvances(t *testing.T) {
+	t.Parallel()
+	t0 := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := newParallelDiagnoseProgressAt(10, t0)
+	p.completed = 1
+	p.poolElapsedAtLastCompletion = 30 * time.Second
+	p.active[1] = parallelIterationProgress{startedAt: t0.Add(5 * time.Second)}
+
+	var b1, b2 strings.Builder
+	renderParallelDiagnoseProgressLine(&b1, p, t0.Add(60*time.Second), true)
+	renderParallelDiagnoseProgressLine(&b2, p, t0.Add(61*time.Second), true)
+
+	eta1 := extractDiagnoseETADuration(lineWithoutANSI(b1.String()))
+	eta2 := extractDiagnoseETADuration(lineWithoutANSI(b2.String()))
+	require.NotEmpty(t, eta1)
+	require.Equal(t, eta1, eta2, "ETA must not creep upward each tick while iterations are in flight")
+	require.Equal(t, "4m30s", eta1) // 9 remaining * 30s / 1 completed
+}
+
+func TestParallelDiagnoseProgress_finishRecordsCompletedWall(t *testing.T) {
+	t.Parallel()
+	t0 := time.Now().Add(-90 * time.Second)
+	p := newParallelDiagnoseProgressAt(3, t0)
+	p.start(0)
+	p.finish(0)
+	_, _, _, _, completedWall := p.renderSnapshot(time.Now())
+	require.InDelta(t, 90.0, completedWall.Seconds(), 1.0)
 }
 
 func TestRenderParallelDiagnoseProgressLine_noEtaWhenNoneComplete(t *testing.T) {
