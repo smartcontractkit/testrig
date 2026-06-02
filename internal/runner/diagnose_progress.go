@@ -113,7 +113,7 @@ func (p *parallelDiagnoseProgress) finish(iteration int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if pr, ok := p.active[iteration]; ok {
-		p.completedDurationSum += max(time.Since(pr.startedAt), 0).Round(time.Second)
+		p.completedDurationSum += max(time.Since(pr.startedAt), 0)
 	}
 	delete(p.active, iteration)
 	p.completed++
@@ -176,15 +176,19 @@ func progressBracket(inner string) string {
 	return termstyle.Muted.Render("[") + inner + termstyle.Muted.Render("]")
 }
 
-// diagnoseRemainingETA returns gross remaining time at historical average per
-// iteration, minus time already spent on in-flight work, floored at zero.
-// Used for serial diagnose where exactly one iteration is in flight.
+// diagnoseRemainingETA estimates wall time left for serial diagnose where
+// exactly one iteration is in flight. Remaining slots include that iteration;
+// not-started slots get a full avg and the in-flight slot contributes
+// max(0, avg-inFlightElapsed).
 func diagnoseRemainingETA(remaining int, avgPerIter, inFlightElapsed time.Duration) time.Duration {
 	if remaining <= 0 || avgPerIter <= 0 {
 		return 0
 	}
-	gross := time.Duration(remaining) * avgPerIter
-	return max(gross-inFlightElapsed, 0)
+	notStarted := remaining - 1
+	if notStarted < 0 {
+		notStarted = 0
+	}
+	return time.Duration(notStarted)*avgPerIter + max(avgPerIter-inFlightElapsed, 0)
 }
 
 // diagnoseParallelRemainingETA estimates wall time left using mean completed
