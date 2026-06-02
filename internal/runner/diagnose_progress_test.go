@@ -58,15 +58,22 @@ func TestRenderDiagnoseProgressLine_etaShownWhenCompletionsExist(t *testing.T) {
 	t0 := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
 	runStart := t0.Add(-60 * time.Second) // 60s elapsed, 2 iterations done
 	// iteration=3 (1-based), iterations=5, iterElapsed=10s (shown in bracket only; ETA ignores it)
-	// completedCount=2, completedWall=50s, avgPerIter=25s, remainingIters=5-2=3, estimated=75s
+	// completedCount=2, completedWall=50s, avgPerIter=25s, remainingIters=3, gross=75s, minus 10s in-flight → 65s
 	renderDiagnoseProgressLine(&b, 3, 5, 10*time.Second, runStart, t0, true)
 	got := b.String()
 	require.Contains(t, got, "iter 3/5")
 	require.Contains(t, got, "left")
-	require.Equal(t, "1m15s", extractDiagnoseETADuration(lineWithoutANSI(got)))
+	require.Equal(t, "1m5s", extractDiagnoseETADuration(lineWithoutANSI(got)))
 }
 
-func TestRenderDiagnoseProgressLine_etaStableWhileIterationAdvances(t *testing.T) {
+func TestDiagnoseRemainingETA_inFlightExceedsAvgDoesNotOverSubtract(t *testing.T) {
+	t.Parallel()
+	// 3 remaining slots (1 in flight + 2 not started), avg 60s, in-flight already 120s.
+	got := diagnoseRemainingETA(3, 60*time.Second, 120*time.Second)
+	require.Equal(t, 2*time.Minute, got)
+}
+
+func TestRenderDiagnoseProgressLine_etaCountsDownWhileIterationAdvances(t *testing.T) {
 	t.Parallel()
 	t0 := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
 	runStart := t0.Add(-6 * time.Minute)
@@ -78,7 +85,9 @@ func TestRenderDiagnoseProgressLine_etaStableWhileIterationAdvances(t *testing.T
 	eta1 := extractDiagnoseETADuration(lineWithoutANSI(b1.String()))
 	eta2 := extractDiagnoseETADuration(lineWithoutANSI(b2.String()))
 	require.NotEmpty(t, eta1)
-	require.Equal(t, eta1, eta2, "ETA must not creep upward each tick during the same iteration")
+	require.NotEmpty(t, eta2)
+	require.Equal(t, "10m45s", eta1)
+	require.Equal(t, "10m44s", eta2, "ETA should tick down as the iteration runs")
 }
 
 func lineWithoutANSI(s string) string {
@@ -154,7 +163,8 @@ func TestRenderParallelDiagnoseProgressLine_etaShownWhenCompletionsExist(t *test
 	t0 := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	now := t0.Add(60 * time.Second)
 	p := newParallelDiagnoseProgressAt(10, t0)
-	p.completed = 2 // 2 completed in 60s → avg 30s, remaining 8 → ~240s=4m0s
+	p.completed = 2
+	p.completedDurationSum = 60 * time.Second // avg 30s per iteration, 8 not started → 4m0s
 	p.poolElapsedAtLastCompletion = 60 * time.Second
 	renderParallelDiagnoseProgressLine(&b, p, now, true)
 	got := b.String()
@@ -163,33 +173,66 @@ func TestRenderParallelDiagnoseProgressLine_etaShownWhenCompletionsExist(t *test
 	require.Equal(t, "4m0s", extractDiagnoseETADuration(lineWithoutANSI(got)))
 }
 
-func TestRenderParallelDiagnoseProgressLine_etaStableWhileIterationAdvances(t *testing.T) {
+func TestRenderParallelDiagnoseProgressLine_etaCountsDownWhileIterationAdvances(t *testing.T) {
 	t.Parallel()
 	t0 := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	p := newParallelDiagnoseProgressAt(10, t0)
 	p.completed = 1
+	p.completedDurationSum = 30 * time.Second
 	p.poolElapsedAtLastCompletion = 30 * time.Second
 	p.active[1] = parallelIterationProgress{startedAt: t0.Add(5 * time.Second)}
 
 	var b1, b2 strings.Builder
-	renderParallelDiagnoseProgressLine(&b1, p, t0.Add(60*time.Second), true)
-	renderParallelDiagnoseProgressLine(&b2, p, t0.Add(61*time.Second), true)
+	renderParallelDiagnoseProgressLine(&b1, p, t0.Add(20*time.Second), true)
+	renderParallelDiagnoseProgressLine(&b2, p, t0.Add(21*time.Second), true)
 
 	eta1 := extractDiagnoseETADuration(lineWithoutANSI(b1.String()))
 	eta2 := extractDiagnoseETADuration(lineWithoutANSI(b2.String()))
 	require.NotEmpty(t, eta1)
-	require.Equal(t, eta1, eta2, "ETA must not creep upward each tick while iterations are in flight")
-	require.Equal(t, "4m30s", eta1) // 9 remaining * 30s / 1 completed
+	require.NotEmpty(t, eta2)
+	require.Equal(t, "4m15s", eta1) // 8 not started * 30s + (30s - 15s in-flight)
+	require.Equal(t, "4m14s", eta2, "ETA should tick down as in-flight iterations run")
+}
+
+func TestRenderParallelDiagnoseProgressLine_etaNotCollapsedWithMultipleActives(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	t0 := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := t0.Add(60 * time.Second)
+	p := newParallelDiagnoseProgressAt(20, t0)
+	p.completed = 4
+	p.completedDurationSum = 4 * 60 * time.Second // avg 60s per iteration
+	p.poolElapsedAtLastCompletion = 60 * time.Second
+	for i := range 4 {
+		p.active[i] = parallelIterationProgress{startedAt: t0}
+	}
+
+	renderParallelDiagnoseProgressLine(&b, p, now, true)
+	got := extractDiagnoseETADuration(lineWithoutANSI(b.String()))
+	require.Equal(t, "12m0s", got) // 12 not started * 60s; in-flight at avg contribute 0
 }
 
 func TestParallelDiagnoseProgress_finishRecordsCompletedWall(t *testing.T) {
 	t.Parallel()
 	t0 := time.Now().Add(-90 * time.Second)
 	p := newParallelDiagnoseProgressAt(3, t0)
-	p.start(0)
+	p.active[0] = parallelIterationProgress{startedAt: t0}
 	p.finish(0)
-	_, _, _, _, completedWall := p.renderSnapshot(time.Now())
+	_, _, _, _, completedWall, completedDurationSum := p.renderSnapshot(time.Now())
 	require.InDelta(t, 90.0, completedWall.Seconds(), 1.0)
+	require.InDelta(t, 90.0, completedDurationSum.Seconds(), 1.0)
+}
+
+func TestParallelDiagnoseProgress_completedDurationSumPreservesSubSecond(t *testing.T) {
+	t.Parallel()
+	t0 := time.Now()
+	p := newParallelDiagnoseProgressAt(5, t0)
+	p.active[0] = parallelIterationProgress{startedAt: t0.Add(-400 * time.Millisecond)}
+	p.finish(0)
+	p.active[1] = parallelIterationProgress{startedAt: t0.Add(-400 * time.Millisecond)}
+	p.finish(1)
+	_, _, _, _, _, sum := p.renderSnapshot(time.Now())
+	require.GreaterOrEqual(t, sum, 800*time.Millisecond)
 }
 
 func TestRenderParallelDiagnoseProgressLine_noEtaWhenNoneComplete(t *testing.T) {

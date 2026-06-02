@@ -70,9 +70,10 @@ type parallelDiagnoseProgress struct {
 	renderMu                    sync.Mutex
 	totalIterations             int
 	completed                   int
+	completedDurationSum        time.Duration // sum of finished iteration wall times; ETA avg
 	active                      map[int]parallelIterationProgress
 	poolStartedAt               time.Time
-	poolElapsedAtLastCompletion time.Duration // frozen wall at last finish; ETA only
+	poolElapsedAtLastCompletion time.Duration // frozen pool wall at last finish (legacy / tests)
 }
 
 type parallelIterationProgress struct {
@@ -111,6 +112,9 @@ func (p *parallelDiagnoseProgress) finish(iteration int) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if pr, ok := p.active[iteration]; ok {
+		p.completedDurationSum += max(time.Since(pr.startedAt), 0)
+	}
 	delete(p.active, iteration)
 	p.completed++
 	p.poolElapsedAtLastCompletion = max(time.Since(p.poolStartedAt), 0).Round(time.Second)
@@ -145,9 +149,9 @@ func diagnoseWithRenderLock(parallelProgress *parallelDiagnoseProgress, serialPr
 // parallel pool began, and wall time recorded at the last completion (for ETA).
 func (p *parallelDiagnoseProgress) renderSnapshot(
 	now time.Time,
-) (completed, total int, actives []activeIterElapsed, poolElapsed, completedWall time.Duration) {
+) (completed, total int, actives []activeIterElapsed, poolElapsed, completedWall, completedDurationSum time.Duration) {
 	if p == nil {
-		return 0, 0, nil, 0, 0
+		return 0, 0, nil, 0, 0, 0
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -156,6 +160,7 @@ func (p *parallelDiagnoseProgress) renderSnapshot(
 	poolElapsed = max(now.Sub(p.poolStartedAt), 0)
 	poolElapsed = poolElapsed.Round(time.Second)
 	completedWall = p.poolElapsedAtLastCompletion
+	completedDurationSum = p.completedDurationSum
 	for iter, pr := range p.active {
 		elapsed := max(now.Sub(pr.startedAt), 0)
 		actives = append(actives, activeIterElapsed{iteration: iter, elapsed: elapsed.Round(time.Second)})
@@ -163,12 +168,43 @@ func (p *parallelDiagnoseProgress) renderSnapshot(
 	slices.SortFunc(actives, func(a, b activeIterElapsed) int {
 		return a.iteration - b.iteration
 	})
-	return completed, total, actives, poolElapsed, completedWall
+	return completed, total, actives, poolElapsed, completedWall, completedDurationSum
 }
 
 // progressBracket wraps inner (already styled) in muted square brackets.
 func progressBracket(inner string) string {
 	return termstyle.Muted.Render("[") + inner + termstyle.Muted.Render("]")
+}
+
+// diagnoseRemainingETA estimates wall time left for serial diagnose where
+// exactly one iteration is in flight. Remaining slots include that iteration;
+// not-started slots get a full avg and the in-flight slot contributes
+// max(0, avg-inFlightElapsed).
+func diagnoseRemainingETA(remaining int, avgPerIter, inFlightElapsed time.Duration) time.Duration {
+	if remaining <= 0 || avgPerIter <= 0 {
+		return 0
+	}
+	notStarted := max(remaining-1, 0)
+	return time.Duration(notStarted)*avgPerIter + max(avgPerIter-inFlightElapsed, 0)
+}
+
+// diagnoseParallelRemainingETA estimates wall time left using mean completed
+// iteration duration. Not-started slots get a full avg; each in-flight slot
+// contributes max(0, avg-elapsed) so long-running workers are not over-subtracted.
+func diagnoseParallelRemainingETA(
+	total, completed int,
+	actives []activeIterElapsed,
+	avgPerIter time.Duration,
+) time.Duration {
+	if avgPerIter <= 0 || total <= completed {
+		return 0
+	}
+	notStarted := max(total-completed-len(actives), 0)
+	estimated := time.Duration(notStarted) * avgPerIter
+	for _, a := range actives {
+		estimated += max(avgPerIter-a.elapsed, 0)
+	}
+	return estimated
 }
 
 // renderDiagnoseProgressLine writes one status line to w when liveInline is true
@@ -193,12 +229,11 @@ func renderDiagnoseProgressLine(
 		line += "  " + progressBracket(termstyle.Muted.Render(runEl.Round(time.Second).String()))
 		completedCount := iteration - 1
 		if completedCount > 0 {
-			// runEl includes the current iteration; counting it in the average makes
-			// avgPerIter grow every tick during an in-flight iteration (~ETA counts up).
+			// Freeze completed wall so avgPerIter does not grow each tick (~ETA counts up).
 			completedWall := max(runEl-iterElapsed, 0)
 			avgPerIter := completedWall / time.Duration(completedCount)
 			remainingIters := iterations - completedCount
-			estimated := time.Duration(remainingIters) * avgPerIter
+			estimated := diagnoseRemainingETA(remainingIters, avgPerIter, iterElapsed)
 			if estimated > 0 {
 				line += formatETA(estimated)
 			}
@@ -212,7 +247,7 @@ func renderParallelDiagnoseProgressLine(w io.Writer, prog *parallelDiagnoseProgr
 	if !liveInline || prog == nil {
 		return
 	}
-	completed, totalIters, actives, poolElapsed, completedWall := prog.renderSnapshot(now)
+	completed, totalIters, actives, poolElapsed, completedWall, completedDurationSum := prog.renderSnapshot(now)
 	line := progressBracket(termstyle.Label.Render(fmt.Sprintf("%d/%d", completed, totalIters)))
 	if len(actives) > 0 {
 		var sb strings.Builder
@@ -226,14 +261,13 @@ func renderParallelDiagnoseProgressLine(w io.Writer, prog *parallelDiagnoseProgr
 	}
 	line += "  " + progressBracket(termstyle.Muted.Render(poolElapsed.String()))
 	if completed > 0 && totalIters > completed {
-		// completedWall is frozen at the last finish so in-flight pool growth
-		// does not inflate avgPerIter each tick (~ETA counts up), mirroring serial.
-		wallForETA := completedWall
-		if wallForETA <= 0 {
-			wallForETA = poolElapsed
+		avgPerIter := completedWall / time.Duration(completed) // fallback when no durations recorded yet
+		if completedDurationSum > 0 {
+			avgPerIter = completedDurationSum / time.Duration(completed)
+		} else if completedWall <= 0 {
+			avgPerIter = poolElapsed / time.Duration(completed)
 		}
-		remaining := totalIters - completed
-		estimated := time.Duration(remaining) * wallForETA / time.Duration(completed)
+		estimated := diagnoseParallelRemainingETA(totalIters, completed, actives, avgPerIter)
 		if estimated > 0 {
 			line += formatETA(estimated)
 		}
