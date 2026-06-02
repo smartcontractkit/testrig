@@ -67,15 +67,7 @@ pre-commit:
       glob:
         - "*.go"
         - "**/*.go"
-      run: |
-        before=$(git status --porcelain)
-        go generate ./...
-        after=$(git status --porcelain)
-        if [ "$before" != "$after" ]; then
-          echo "go generate changed files; commit the updates" >&2
-          git status --short
-          exit 1
-        fi
+      run: go generate ./...
       stage_fixed: true
 
     go-mod-tidy:
@@ -86,19 +78,12 @@ pre-commit:
         - "*.go"
         - "**/*.go"
       run: |
-        before=$(git status --porcelain)
         while IFS= read -r mod; do
           [ -n "$mod" ] || continue
           (cd "$(dirname "$mod")" && go mod tidy)
         done <<EOF
-        $(git ls-files '**/go.mod')
+        $(git ls-files 'go.mod' '**/go.mod')
         EOF
-        after=$(git status --porcelain)
-        if [ "$before" != "$after" ]; then
-          echo "go mod tidy changed files; commit the updates" >&2
-          git status --short
-          exit 1
-        fi
       stage_fixed: true
 
 pre-push:
