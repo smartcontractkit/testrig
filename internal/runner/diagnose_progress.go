@@ -184,10 +184,7 @@ func diagnoseRemainingETA(remaining int, avgPerIter, inFlightElapsed time.Durati
 	if remaining <= 0 || avgPerIter <= 0 {
 		return 0
 	}
-	notStarted := remaining - 1
-	if notStarted < 0 {
-		notStarted = 0
-	}
+	notStarted := max(remaining-1, 0)
 	return time.Duration(notStarted)*avgPerIter + max(avgPerIter-inFlightElapsed, 0)
 }
 
