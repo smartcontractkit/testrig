@@ -66,6 +66,7 @@ use -count>1 to repeat inside one go test invocation. With --shuffle-seed, a per
 		StringSlice("fail-fast-on", nil, `stop this diagnose run immediately when an iteration matches one or more categories: "failure", "timeout", "slow", or "any"`)
 	cmd.Flags().
 		Bool("shuffle-seed", false, "randomize test order each iteration; a unique seed is generated per iteration and recorded in report.json for reproduction")
+	cmd.Flags().Bool("open-trace", false, "automatically open the trace visualizer in Perfetto after the run completes")
 
 	return cmd
 }

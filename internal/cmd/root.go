@@ -50,11 +50,13 @@ func NewRootCommand(runnerOpts hooks.RunOptions) *cobra.Command {
 	diagnoseCmd := newDiagnoseCmd(runnerOpts)
 	initSkillCmd := newInitSkillCmd()
 	showSkillCmd := newShowSkillCmd()
+	traceCmd := newTraceCmd()
 
 	rootCmd.AddCommand(gotestsumCmd)
 	rootCmd.AddCommand(diagnoseCmd)
 	rootCmd.AddCommand(initSkillCmd)
 	rootCmd.AddCommand(showSkillCmd)
+	rootCmd.AddCommand(traceCmd)
 
 	if runnerOpts.RootFlags != nil {
 		runnerOpts.RootFlags(rootCmd.PersistentFlags())

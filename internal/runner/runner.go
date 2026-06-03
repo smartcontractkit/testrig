@@ -106,6 +106,8 @@ func Gotestsum(ctx context.Context, conf *config.App, args []string, env []strin
 // iterSetup and iterTeardown run before/after each iteration. Either may be
 // nil. Teardown runs even when the iteration's go test invocation fails; its
 // error is reported only when the iteration itself succeeded.
+//
+//nolint:gocyclo // orchestrates the multi-step diagnose run and report writing
 func Diagnose(
 	ctx context.Context,
 	conf *config.App,
@@ -218,11 +220,16 @@ func Diagnose(
 		out.Stderrf("write csv: %v\n", err)
 		return err
 	}
+	if err := WriteTrace(resultsDir, report); err != nil {
+		out.Stderrf("write trace: %v\n", err)
+		return err
+	}
 
 	reportPath := filepath.Join(resultsDir, "report.json")
 	csvPath := diagnoseCSVPath(resultsDir, report)
+	tracePath := filepath.Join(resultsDir, "trace.json")
 	if out.AIOutput() {
-		completeJSON, err := marshalAIDiagnoseComplete(resultsDir, reportPath, report)
+		completeJSON, err := marshalAIDiagnoseComplete(resultsDir, reportPath, tracePath, report)
 		if err != nil {
 			out.Stderrf("marshal ai complete: %v\n", err)
 			return err
@@ -237,7 +244,13 @@ func Diagnose(
 	if report != nil {
 		PrintSummary(out.HumanStderrWriter(), report)
 	}
-	printDiagnoseArtifactsFooter(out, resultsDir, reportPath, csvPath)
+	printDiagnoseArtifactsFooter(out, resultsDir, reportPath, csvPath, tracePath)
+	if conf.OpenTrace {
+		if err := ServeTrace(ctx, resultsDir, out); err != nil {
+			out.Stderrf("serve trace: %v\n", err)
+			return err
+		}
+	}
 	return nil
 }
 
