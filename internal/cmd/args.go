@@ -5,6 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/smartcontractkit/testrig/internal/hooks"
 )
 
 // isHelpRequest reports whether args ask for testrig usage (not go test). Root uses
@@ -86,7 +88,12 @@ func goTestArgsFromRoot(cmd *cobra.Command, args []string) ([]string, error) {
 // runRootAfterParsing applies persistent root flags from args, then runs fn inside
 // withGlobalHooks so global setup/teardown see the parsed flag values. Help requests
 // return before any hooks run.
-func runRootAfterParsing(cmd *cobra.Command, args []string, fn func(remainder []string) error) error {
+func runRootAfterParsing(
+	cmd *cobra.Command,
+	args []string,
+	runnerOpts hooks.RunOptions,
+	fn func(remainder []string) error,
+) error {
 	if isHelpRequest(args) {
 		return pflag.ErrHelp
 	}
@@ -94,7 +101,7 @@ func runRootAfterParsing(cmd *cobra.Command, args []string, fn func(remainder []
 	if err != nil {
 		return err
 	}
-	return withGlobalHooks(func(*cobra.Command, []string) error {
+	return withGlobalHooks(runnerOpts, func(*cobra.Command, []string) error {
 		return fn(remainder)
 	})(cmd, args)
 }
