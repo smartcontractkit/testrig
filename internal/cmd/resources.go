@@ -4,20 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
+
+	"github.com/spf13/cobra"
 
 	"github.com/smartcontractkit/testrig/internal/hooks"
 )
 
 // finishResourceCleanup runs cleanup after a command. On failure it logs to stderr
 // and sets *err when the command itself succeeded.
-func finishResourceCleanup(err *error, cleanup func() error) {
+func finishResourceCleanup(cmd *cobra.Command, err *error, cleanup func() error) {
 	if cleanup == nil {
 		return
 	}
 	if cerr := cleanup(); cerr != nil {
-		fmt.Fprintf(os.Stderr, "%s: resource cleanup failed: %v\n", cliName, cerr)
+		_, printErr := fmt.Fprintf(cmd.ErrOrStderr(), "%s: resource cleanup failed: %v\n", rootCLIName(cmd), cerr)
+		if printErr != nil {
+			if *err == nil {
+				*err = printErr
+			}
+		}
 		if *err == nil {
 			*err = cerr
 		}

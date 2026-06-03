@@ -121,9 +121,14 @@ func TestRunRootAfterParsingAppliesFlagsBeforeHooks(t *testing.T) {
 	cmd := newRootArgsTestCmd(t)
 	cmd.SetContext(context.Background())
 
-	err := runRootAfterParsing(cmd, []string{"--global-setup", touchCmd(marker)}, func([]string) error {
-		return nil
-	})
+	err := runRootAfterParsing(
+		cmd,
+		[]string{"--global-setup", touchCmd(marker)},
+		hooks.RunOptions{},
+		func([]string) error {
+			return nil
+		},
+	)
 	require.NoError(t, err)
 	assert.FileExists(t, marker)
 }
@@ -136,9 +141,14 @@ func TestRunRootAfterParsingHelpSkipsHooks(t *testing.T) {
 	cmd := newRootArgsTestCmd(t)
 	cmd.SetContext(context.Background())
 
-	err := runRootAfterParsing(cmd, []string{"--global-setup", touchCmd(marker), "-h"}, func([]string) error {
-		return nil
-	})
+	err := runRootAfterParsing(
+		cmd,
+		[]string{"--global-setup", touchCmd(marker), "-h"},
+		hooks.RunOptions{},
+		func([]string) error {
+			return nil
+		},
+	)
 	require.ErrorIs(t, err, pflag.ErrHelp)
 	_, statErr := os.Stat(marker)
 	assert.True(t, os.IsNotExist(statErr))

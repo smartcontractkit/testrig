@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,23 +30,53 @@ func TestResourceEnvReturnsProviderEnv(t *testing.T) {
 	assert.Equal(t, want, env)
 }
 
+func testRootWithSubcommand(t *testing.T, rootUse string) (*cobra.Command, *cobra.Command) {
+	t.Helper()
+	root := &cobra.Command{Use: rootUse}
+	sub := &cobra.Command{Use: "sub"}
+	root.AddCommand(sub)
+	return root, sub
+}
+
 func TestFinishResourceCleanup(t *testing.T) {
 	t.Parallel()
 
 	t.Run("sets err when run succeeded", func(t *testing.T) {
 		t.Parallel()
+		_, sub := testRootWithSubcommand(t, "testrig")
 		var err error
-		finishResourceCleanup(&err, func() error { return errors.New("cleanup") })
+		finishResourceCleanup(sub, &err, func() error { return errors.New("cleanup") })
 		require.Error(t, err)
 	})
 
 	t.Run("preserves run error", func(t *testing.T) {
 		t.Parallel()
+		_, sub := testRootWithSubcommand(t, "testrig")
 		runErr := errors.New("run")
 		err := runErr
-		finishResourceCleanup(&err, func() error { return errors.New("cleanup") })
+		finishResourceCleanup(sub, &err, func() error { return errors.New("cleanup") })
 		require.ErrorIs(t, err, runErr)
 	})
+}
+
+func TestFinishResourceCleanupStderrUsesRootCLIName(t *testing.T) {
+	t.Parallel()
+	rootCmd := NewRootCommand(hooks.RunOptions{RootCommand: "cltest"})
+	var sub *cobra.Command
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == "gotestsum" {
+			sub = c
+			break
+		}
+	}
+	require.NotNil(t, sub)
+
+	var buf bytes.Buffer
+	sub.SetErr(&buf)
+
+	var runErr error
+	finishResourceCleanup(sub, &runErr, func() error { return errors.New("cleanup failed") })
+	assert.Contains(t, buf.String(), "cltest: resource cleanup failed:")
 }
 
 func TestProvisionResourcesNilProviderIsNoop(t *testing.T) {

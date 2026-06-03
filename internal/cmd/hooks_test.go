@@ -35,7 +35,7 @@ func TestWithGlobalHooksTeardownRunsOnSuccess(t *testing.T) {
 	teardownMarker := filepath.Join(dir, "teardown")
 
 	c := newCmdWithHookFlags("", touchCmd(teardownMarker))
-	err := withGlobalHooks(func(*cobra.Command, []string) error { return nil })(c, nil)
+	err := withGlobalHooks(hooks.RunOptions{}, func(*cobra.Command, []string) error { return nil })(c, nil)
 
 	require.NoError(t, err)
 	assert.FileExists(t, teardownMarker)
@@ -48,7 +48,7 @@ func TestWithGlobalHooksTeardownRunsOnRunError(t *testing.T) {
 
 	wantErr := errors.New("run failed")
 	c := newCmdWithHookFlags("", touchCmd(teardownMarker))
-	err := withGlobalHooks(func(*cobra.Command, []string) error { return wantErr })(c, nil)
+	err := withGlobalHooks(hooks.RunOptions{}, func(*cobra.Command, []string) error { return wantErr })(c, nil)
 
 	require.ErrorIs(t, err, wantErr)
 	assert.FileExists(t, teardownMarker, "teardown must run even when RunE errored")
@@ -59,11 +59,26 @@ func TestWithGlobalHooksTeardownErrorJoinsRunError(t *testing.T) {
 
 	wantErr := errors.New("run failed")
 	c := newCmdWithHookFlags("", "exit 7")
-	err := withGlobalHooks(func(*cobra.Command, []string) error { return wantErr })(c, nil)
+	err := withGlobalHooks(hooks.RunOptions{}, func(*cobra.Command, []string) error { return wantErr })(c, nil)
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, wantErr, "run error preserved")
 	assert.Contains(t, err.Error(), "global teardown", "teardown failure surfaced")
+}
+
+func TestWithGlobalHooksRunsProgrammaticGlobalSetup(t *testing.T) {
+	t.Parallel()
+	ran := false
+	opts := hooks.RunOptions{
+		GlobalSetup: func(context.Context) error {
+			ran = true
+			return nil
+		},
+	}
+	c := newCmdWithHookFlags("", "")
+	err := withGlobalHooks(opts, func(*cobra.Command, []string) error { return nil })(c, nil)
+	require.NoError(t, err)
+	assert.True(t, ran)
 }
 
 func TestWithGlobalHooksSetupErrorSkipsRunAndTeardown(t *testing.T) {
@@ -73,7 +88,7 @@ func TestWithGlobalHooksSetupErrorSkipsRunAndTeardown(t *testing.T) {
 
 	ran := false
 	c := newCmdWithHookFlags("exit 9", touchCmd(teardownMarker))
-	err := withGlobalHooks(func(*cobra.Command, []string) error {
+	err := withGlobalHooks(hooks.RunOptions{}, func(*cobra.Command, []string) error {
 		ran = true
 		return nil
 	})(c, nil)

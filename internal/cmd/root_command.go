@@ -1,17 +1,26 @@
 package cmd
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
 
 const defaultRootCommandName = "testrig"
-
-// cliName is the root command name used in stderr prefixes. Updated by applyRootCommand.
-var cliName = defaultRootCommandName
 
 func effectiveRootCommand(name string) string {
 	if name == "" {
 		return defaultRootCommandName
 	}
 	return name
+}
+
+// rootCLIName returns the configured root command name (e.g. testrig or cltest).
+func rootCLIName(cmd *cobra.Command) string {
+	if cmd == nil {
+		return defaultRootCommandName
+	}
+	return cmd.Root().Name()
 }
 
 const (
@@ -47,8 +56,7 @@ on the root command before gotestsum, for example:
 %s diagnose --iterations 10 -- ./...`
 )
 
-func applyRootCommand(name string) {
-	cliName = effectiveRootCommand(name)
+func applyRootCommand(rootCmd, gotestsumCmd, diagnoseCmd *cobra.Command, cliName string) {
 	rootCmd.Use = cliName
 	rootCmd.Long = fmt.Sprintf(rootLongTmpl, cliName, cliName)
 	rootCmd.Example = fmt.Sprintf(rootExampleTmpl, cliName, cliName, cliName)
