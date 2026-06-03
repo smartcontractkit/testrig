@@ -336,23 +336,14 @@ func ServeTrace(
 	perfettoURL := fmt.Sprintf("https://ui.perfetto.dev/#!/?url=http://%s/trace.json", listener.Addr().String())
 
 	if out != nil {
-		out.HumanStderr(fmt.Sprintf("\nServing trace at http://%s/trace.json\n", listener.Addr().String()))
-		out.HumanStderr(fmt.Sprintf("Opening Perfetto UI at %s\n", perfettoURL))
-		out.HumanStderr("Press Ctrl+C to stop serving...\n")
+		out.HumanStderr(fmt.Sprintf("See test trace at %s\n", perfettoURL))
 	} else {
-		fmt.Printf("\nServing trace at http://%s/trace.json\n", listener.Addr().String())
-		fmt.Printf("Opening Perfetto UI at %s\n", perfettoURL)
-		fmt.Println("Press Ctrl+C to stop serving...")
+		fmt.Printf("See test trace at %s\n", perfettoURL)
 	}
 
 	_ = openBrowserCB(perfettoURL)
 
 	<-srvCtx.Done()
-	if out != nil {
-		out.HumanStderr("\nStopping server...\n")
-	} else {
-		fmt.Println("\nStopping server...")
-	}
 
 	// Graceful shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
