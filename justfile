@@ -12,7 +12,7 @@ test:
 
 # Run tests with the race detector enabled
 test_race:
-    go tool gotestsum -- -race ./...
+    go tool gotestsum -- -race -count=3 ./...
 
 # Run standard benchmarks
 bench:

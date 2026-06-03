@@ -953,13 +953,12 @@ func TestRunDiagnoseIterations_serialLiveProgressMutex_noMergedProgressAndTableL
 					case <-tick.C:
 						p.SerialProgressMu.Lock()
 						renderDiagnoseProgressLine(
-							p.Out.HumanStderrWriter(),
+							p.Out,
 							iter,
 							iters,
 							time.Since(iterStart),
 							p.DiagnoseRunStart,
 							time.Now(),
-							true,
 						)
 						p.SerialProgressMu.Unlock()
 					}

@@ -15,26 +15,28 @@ import (
 // Printer writes CLI messages for tools/test. Child processes (go test) still
 // attach os.Stdout/os.Stderr directly where passthrough is intended.
 type Printer struct {
-	aiOutput   bool
-	stdout     io.Writer
-	stderr     io.Writer
-	liveInline bool // human mode and stderr is a TTY (safe for \r progress)
+	aiOutput        bool
+	stdout          io.Writer
+	stderr          io.Writer
+	stderrFD        uintptr
+	liveInline      bool // human mode and stderr is a TTY (safe for \r progress)
+	inlineLastLines int
 }
 
 // New builds a production Printer. liveInline is enabled when stderrFD points
 // at a real terminal and ai-output is off. Tests should use NewForTest.
 func New(aiOutput bool, stdout, stderr io.Writer, stderrFD uintptr) *Printer {
 	live := !aiOutput && term.IsTerminal(stderrFD)
-	return newPrinter(aiOutput, stdout, stderr, live)
+	return newPrinter(aiOutput, stdout, stderr, stderrFD, live)
 }
 
 // NewForTest returns a Printer with explicit live-inline behavior. liveInline
 // is ignored when aiOutput is true.
 func NewForTest(aiOutput bool, stdout, stderr io.Writer, liveInline bool) *Printer {
-	return newPrinter(aiOutput, stdout, stderr, liveInline && !aiOutput)
+	return newPrinter(aiOutput, stdout, stderr, 0, liveInline && !aiOutput)
 }
 
-func newPrinter(aiOutput bool, stdout, stderr io.Writer, liveInline bool) *Printer {
+func newPrinter(aiOutput bool, stdout, stderr io.Writer, stderrFD uintptr, liveInline bool) *Printer {
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -45,6 +47,7 @@ func newPrinter(aiOutput bool, stdout, stderr io.Writer, liveInline bool) *Print
 		aiOutput:   aiOutput,
 		stdout:     stdout,
 		stderr:     stderr,
+		stderrFD:   stderrFD,
 		liveInline: liveInline,
 	}
 }
@@ -99,10 +102,16 @@ func (p *Printer) Stdoutln(a ...any) {
 	_, _ = fmt.Fprintln(p.stdout, a...)
 }
 
-// ClearInline clears the current stderr line when live inline progress is active.
+// SetInlineLastLinesForTest sets tracked wrapped line count (output package tests only).
+func (p *Printer) SetInlineLastLinesForTest(n int) {
+	p.inlineLastLines = n
+}
+
+// ClearInline clears live inline progress lines on stderr when active.
 func (p *Printer) ClearInline() {
 	if !p.liveInline {
 		return
 	}
-	_, _ = fmt.Fprint(p.stderr, "\r\033[K")
+	eraseInlineLines(p.stderr, p.inlineLastLines)
+	p.inlineLastLines = 0
 }
