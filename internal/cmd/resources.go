@@ -18,7 +18,12 @@ func finishResourceCleanup(cmd *cobra.Command, err *error, cleanup func() error)
 		return
 	}
 	if cerr := cleanup(); cerr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "%s: resource cleanup failed: %v\n", rootCLIName(cmd), cerr)
+		_, printErr := fmt.Fprintf(cmd.ErrOrStderr(), "%s: resource cleanup failed: %v\n", rootCLIName(cmd), cerr)
+		if printErr != nil {
+			if *err == nil {
+				*err = printErr
+			}
+		}
 		if *err == nil {
 			*err = cerr
 		}
