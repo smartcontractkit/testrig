@@ -16,7 +16,7 @@ type wdKeyType struct{}
 var wdKey = wdKeyType{}
 
 func newTraceCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "trace [results-dir]",
 		Short: "Serve and open local trace files in Perfetto UI automatically",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -41,9 +41,18 @@ func newTraceCmd() *cobra.Command {
 				}
 			}
 
-			return runner.ServeTrace(cmd.Context(), resultsDir, nil, "", nil)
+			addr, err := cmd.Flags().GetString("trace-addr")
+			if err != nil {
+				return err
+			}
+
+			return runner.ServeTrace(cmd.Context(), resultsDir, nil, runner.TraceServeOptions{
+				Addr: addr,
+			})
 		},
 	}
+	cmd.Flags().String("trace-addr", "127.0.0.1:9001", "local address/port to serve the trace visualizer on")
+	return cmd
 }
 
 func findLatestResultsDir(wd string) (string, error) {

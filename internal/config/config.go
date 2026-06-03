@@ -28,6 +28,7 @@ type App struct {
 	FailFastOn         []string
 	Shuffle            bool
 	OpenTrace          bool
+	TraceAddr          string
 	IterationSetup     string
 	IterationTeardown  string
 	shellHooks         map[string]string
@@ -121,6 +122,14 @@ var flagRegistry = map[string]flagBinder{
 			return err
 		}
 		conf.OpenTrace = v
+		return nil
+	},
+	"trace-addr": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetString("trace-addr")
+		if err != nil {
+			return err
+		}
+		conf.TraceAddr = v
 		return nil
 	},
 }

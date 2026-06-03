@@ -220,7 +220,7 @@ func Diagnose(
 		out.Stderrf("write csv: %v\n", err)
 		return err
 	}
-	if err := WriteTrace(resultsDir, report); err != nil {
+	if err := WriteTrace(out, resultsDir, report); err != nil {
 		out.Stderrf("write trace: %v\n", err)
 		return err
 	}
@@ -246,7 +246,7 @@ func Diagnose(
 	}
 	printDiagnoseArtifactsFooter(out, resultsDir, reportPath, csvPath, tracePath)
 	if conf.OpenTrace {
-		if err := ServeTrace(ctx, resultsDir, out, "", nil); err != nil {
+		if err := ServeTrace(ctx, resultsDir, out, TraceServeOptions{}); err != nil {
 			out.Stderrf("serve trace: %v\n", err)
 			return err
 		}

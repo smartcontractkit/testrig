@@ -156,7 +156,7 @@ func parseTraceEvents(r io.Reader, iter int) ([]TraceEvent, error) {
 
 	// Map tids to events
 	for i := range events {
-		pkg := events[i].Args["package"].(string)
+		pkg := safeStringArg(events[i].Args, "package")
 		events[i].Tid = pkgTids[pkg]
 	}
 
@@ -186,7 +186,7 @@ func parseTraceEvents(r io.Reader, iter int) ([]TraceEvent, error) {
 }
 
 // WriteTrace aggregates the iteration-*.log.jsonl files under resultsDir and writes trace.json.
-func WriteTrace(resultsDir string, rep *Report) error {
+func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 	matches, err := filepath.Glob(filepath.Join(resultsDir, "iteration-*.log.jsonl"))
 	if err != nil {
 		return err
@@ -242,6 +242,18 @@ func WriteTrace(resultsDir string, rep *Report) error {
 		allEvents = append(allEvents, events...)
 	}
 
+	// Warn if no duration events were parsed
+	hasDurationEvents := false
+	for _, ev := range allEvents {
+		if ev.Ph == "X" {
+			hasDurationEvents = true
+			break
+		}
+	}
+	if !hasDurationEvents && out != nil {
+		out.Stderrf("warning: no test execution events recorded in trace\n")
+	}
+
 	// Write trace.json
 	b, err := json.MarshalIndent(allEvents, "", "  ")
 	if err != nil {
@@ -250,22 +262,29 @@ func WriteTrace(resultsDir string, rep *Report) error {
 	return os.WriteFile(filepath.Join(resultsDir, "trace.json"), b, 0600)
 }
 
+// TraceServeOptions groups parameters for ServeTrace.
+type TraceServeOptions struct {
+	Addr        string
+	OpenBrowser func(string) error
+}
+
 // ServeTrace starts a local HTTP server on the given address (defaults to 127.0.0.1:9001) to serve trace.json, opens the browser to Perfetto UI, and blocks until ctx is cancelled.
 func ServeTrace(
 	ctx context.Context,
 	resultsDir string,
 	out *output.Printer,
-	addr string,
-	openBrowserCB func(string) error,
+	opts TraceServeOptions,
 ) error {
 	tracePath := filepath.Join(resultsDir, "trace.json")
 	if _, err := os.Stat(tracePath); err != nil {
 		return fmt.Errorf("trace file not found at %s: %w", tracePath, err)
 	}
 
+	addr := opts.Addr
 	if addr == "" {
 		addr = "127.0.0.1:9001"
 	}
+	openBrowserCB := opts.OpenBrowser
 	if openBrowserCB == nil {
 		openBrowserCB = openBrowser
 	}
@@ -334,6 +353,12 @@ func ServeTrace(
 	} else {
 		fmt.Println("\nStopping server...")
 	}
+
+	// Graceful shutdown
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	_ = server.Shutdown(shutdownCtx)
+
 	return nil
 }
 
@@ -351,4 +376,19 @@ func openBrowser(url string) error {
 		cmd = exec.Command("xdg-open", url)
 	}
 	return cmd.Run()
+}
+
+func safeStringArg(args map[string]any, key string) string {
+	if args == nil {
+		return ""
+	}
+	val, ok := args[key]
+	if !ok {
+		return ""
+	}
+	s, ok := val.(string)
+	if !ok {
+		return ""
+	}
+	return s
 }

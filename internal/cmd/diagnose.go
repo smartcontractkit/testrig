@@ -67,6 +67,7 @@ use -count>1 to repeat inside one go test invocation. With --shuffle-seed, a per
 	cmd.Flags().
 		Bool("shuffle-seed", false, "randomize test order each iteration; a unique seed is generated per iteration and recorded in report.json for reproduction")
 	cmd.Flags().Bool("open-trace", false, "automatically open the trace visualizer in Perfetto after the run completes")
+	cmd.Flags().String("trace-addr", "127.0.0.1:9001", "local address/port to serve the trace visualizer on")
 
 	return cmd
 }

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/smartcontractkit/testrig/internal/output"
 )
 
 func TestTraceGeneration(t *testing.T) {
@@ -141,7 +144,7 @@ func TestWriteTrace(t *testing.T) {
 		},
 	}
 
-	err = WriteTrace(tmpDir, report)
+	err = WriteTrace(nil, tmpDir, report)
 	require.NoError(t, err)
 
 	// Verify trace.json exists and is valid json
@@ -157,6 +160,33 @@ func TestWriteTrace(t *testing.T) {
 
 	// We expect metadata and complete events
 	assert.NotEmpty(t, traceEvents)
+
+	// Verify specific process name metadata and duration events
+	var hasProc1, hasProc2, hasThreadName, hasPkg1Event, hasPkg2Event bool
+	for _, ev := range traceEvents {
+		if ev.Name == "process_name" && ev.Pid == 1 && ev.Args["name"] == "Iteration 1 (Seed 123)" {
+			hasProc1 = true
+		}
+		if ev.Name == "process_name" && ev.Pid == 2 && ev.Args["name"] == "Iteration 2 (Seed 456)" {
+			hasProc2 = true
+		}
+		if ev.Name == "thread_name" && ev.Pid == 1 && ev.Args["name"] == "pkg1" {
+			hasThreadName = true
+		}
+		if ev.Name == "pkg1" && ev.Ph == "X" {
+			if ev.Pid == 1 && ev.Dur == 300000 {
+				hasPkg1Event = true
+			}
+			if ev.Pid == 2 && ev.Dur == 200000 {
+				hasPkg2Event = true
+			}
+		}
+	}
+	assert.True(t, hasProc1, "should have process name for Iteration 1")
+	assert.True(t, hasProc2, "should have process name for Iteration 2")
+	assert.True(t, hasThreadName, "should have thread name for pkg1")
+	assert.True(t, hasPkg1Event, "should have pkg1 event in Iteration 1 (300ms)")
+	assert.True(t, hasPkg2Event, "should have pkg1 event in Iteration 2 (200ms)")
 }
 
 func TestServeTrace(t *testing.T) {
@@ -181,7 +211,10 @@ func TestServeTrace(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		// Run ServeTrace and record outcome
-		done <- ServeTrace(ctx, tmpDir, nil, "127.0.0.1:0", openBrowserMock)
+		done <- ServeTrace(ctx, tmpDir, nil, TraceServeOptions{
+			Addr:        "127.0.0.1:0",
+			OpenBrowser: openBrowserMock,
+		})
 	}()
 
 	// Wait for browser URL to be set
@@ -234,12 +267,16 @@ func TestWriteTrace_EmptyMatches(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
-	err := WriteTrace(tmpDir, nil)
+	var stderr strings.Builder
+	out := output.NewForTest(false, io.Discard, &stderr, false)
+
+	err := WriteTrace(out, tmpDir, nil)
 	require.NoError(t, err)
 
 	content, err := os.ReadFile(filepath.Join(tmpDir, "trace.json")) //nolint:gosec // G304: path from filepath.Join
 	require.NoError(t, err)
 	assert.Equal(t, "[]", strings.TrimSpace(string(content)))
+	assert.Contains(t, stderr.String(), "warning: no test execution events recorded in trace")
 }
 
 func TestWriteTrace_InvalidIterationName(t *testing.T) {
@@ -249,6 +286,14 @@ func TestWriteTrace_InvalidIterationName(t *testing.T) {
 	err := os.WriteFile(filepath.Join(tmpDir, "iteration-invalid.log.jsonl"), []byte("{}"), 0600)
 	require.NoError(t, err)
 
-	err = WriteTrace(tmpDir, &Report{})
+	err = WriteTrace(nil, tmpDir, &Report{})
 	require.NoError(t, err)
+}
+
+func TestSafeStringArg(t *testing.T) {
+	t.Parallel()
+	assert.Empty(t, safeStringArg(nil, "package"))
+	assert.Empty(t, safeStringArg(map[string]any{}, "package"))
+	assert.Empty(t, safeStringArg(map[string]any{"package": 123}, "package"))
+	assert.Equal(t, "pkg", safeStringArg(map[string]any{"package": "pkg"}, "package"))
 }
