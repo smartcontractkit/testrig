@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,14 +20,6 @@ func TestTraceCommand_NoArgsNoDir(t *testing.T) {
 	// 1. Arrange: Create an empty temp directory as the working directory
 	tmpDir := t.TempDir()
 
-	// Change working directory to the empty temp directory
-	oldWd, err := os.Getwd()
-	require.NoError(t, err)
-	require.NoError(t, os.Chdir(tmpDir))
-	defer func() {
-		_ = os.Chdir(oldWd)
-	}()
-
 	// 2. Act: Construct root command and run "trace" subcommand
 	rootCmd := NewRootCommand(hooks.RunOptions{})
 
@@ -35,7 +28,8 @@ func TestTraceCommand_NoArgsNoDir(t *testing.T) {
 	rootCmd.SetErr(buf)
 	rootCmd.SetArgs([]string{"trace"})
 
-	err = rootCmd.ExecuteContext(context.Background())
+	ctx := context.WithValue(context.Background(), wdKey, tmpDir)
+	err := rootCmd.ExecuteContext(ctx)
 
 	// 3. Assert: Since there's no trace.json or diagnose directory, it should fail
 	require.Error(t, err)
@@ -48,13 +42,19 @@ func TestFindLatestResultsDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create dummy diagnose directories
-	d1 := filepath.Join(tmpDir, "diagnose-20260603120000")
-	d2 := filepath.Join(tmpDir, "diagnose-20260603130000")
+	// d1 is lexicographically larger ("z") but older.
+	// d2 is lexicographically smaller ("a") but newer.
+	d1 := filepath.Join(tmpDir, "diagnose-z-20260603120000")
+	d2 := filepath.Join(tmpDir, "diagnose-a-20260603130000")
 	d3 := filepath.Join(tmpDir, "not-diagnose-dir")
 
 	require.NoError(t, os.Mkdir(d1, 0700))
 	require.NoError(t, os.Mkdir(d2, 0700))
 	require.NoError(t, os.Mkdir(d3, 0700))
+
+	now := time.Now()
+	require.NoError(t, os.Chtimes(d1, now.Add(-time.Hour), now.Add(-time.Hour)))
+	require.NoError(t, os.Chtimes(d2, now, now))
 
 	// Find latest
 	latest, err := findLatestResultsDir(tmpDir)

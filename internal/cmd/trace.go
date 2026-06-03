@@ -11,6 +11,10 @@ import (
 	"github.com/smartcontractkit/testrig/internal/runner"
 )
 
+type wdKeyType struct{}
+
+var wdKey = wdKeyType{}
+
 func newTraceCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "trace [results-dir]",
@@ -27,13 +31,17 @@ func newTraceCmd() *cobra.Command {
 					resultsDir = path
 				}
 			} else {
-				resultsDir, err = findLatestResultsDir(".")
+				wd := "."
+				if val, ok := cmd.Context().Value(wdKey).(string); ok {
+					wd = val
+				}
+				resultsDir, err = findLatestResultsDir(wd)
 				if err != nil {
 					return err
 				}
 			}
 
-			return runner.ServeTrace(cmd.Context(), resultsDir, nil)
+			return runner.ServeTrace(cmd.Context(), resultsDir, nil, "", nil)
 		},
 	}
 }
@@ -56,6 +64,13 @@ func findLatestResultsDir(wd string) (string, error) {
 		return "", errors.New("no diagnose results directory found")
 	}
 
-	sort.Strings(dirs)
+	sort.Slice(dirs, func(i, j int) bool {
+		infoI, errI := os.Stat(dirs[i])
+		infoJ, errJ := os.Stat(dirs[j])
+		if errI != nil || errJ != nil {
+			return dirs[i] < dirs[j]
+		}
+		return infoI.ModTime().Before(infoJ.ModTime())
+	})
 	return dirs[len(dirs)-1], nil
 }

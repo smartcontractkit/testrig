@@ -246,7 +246,7 @@ func Diagnose(
 	}
 	printDiagnoseArtifactsFooter(out, resultsDir, reportPath, csvPath, tracePath)
 	if conf.OpenTrace {
-		if err := ServeTrace(ctx, resultsDir, out); err != nil {
+		if err := ServeTrace(ctx, resultsDir, out, "", nil); err != nil {
 			out.Stderrf("serve trace: %v\n", err)
 			return err
 		}

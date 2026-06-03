@@ -1,11 +1,12 @@
 package runner
 
 import (
-	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,13 +32,14 @@ func TestTraceGeneration(t *testing.T) {
 	assert.NotEmpty(t, events)
 
 	var pkgEvent, testEvent *TraceEvent
-	for _, ev := range events {
+	for i := range events {
+		ev := &events[i]
 		if ev.Ph == "X" {
 			switch ev.Name {
 			case "pkg1":
-				pkgEvent = &ev
+				pkgEvent = ev
 			case "TestA":
-				testEvent = &ev
+				testEvent = ev
 			}
 		}
 	}
@@ -69,13 +71,14 @@ func TestTraceGeneration_TableDriven(t *testing.T) {
 `,
 			expectedEvents: func(t *testing.T, events []TraceEvent) {
 				var pkgEvent, testEvent *TraceEvent
-				for _, ev := range events {
+				for i := range events {
+					ev := &events[i]
 					if ev.Ph == "X" {
 						switch ev.Name {
 						case "pkg1":
-							pkgEvent = &ev
+							pkgEvent = ev
 						case "TestA":
-							testEvent = &ev
+							testEvent = ev
 						}
 					}
 				}
@@ -91,9 +94,10 @@ func TestTraceGeneration_TableDriven(t *testing.T) {
 			input: `{"Time":"2026-06-03T12:00:00.200000Z","Action":"pass","Package":"pkg1","Test":"TestA","Elapsed":0.15}`,
 			expectedEvents: func(t *testing.T, events []TraceEvent) {
 				var testEvent *TraceEvent
-				for _, ev := range events {
+				for i := range events {
+					ev := &events[i]
 					if ev.Ph == "X" && ev.Name == "TestA" {
-						testEvent = &ev
+						testEvent = ev
 					}
 				}
 				require.NotNil(t, testEvent)
@@ -163,18 +167,88 @@ func TestServeTrace(t *testing.T) {
 	err := os.WriteFile(filepath.Join(tmpDir, "trace.json"), []byte("[]"), 0600)
 	require.NoError(t, err)
 
-	// Mock openBrowserFunc to do nothing
-	oldOpenBrowser := openBrowserFunc
-	openBrowserFunc = func(_ string) error { return nil }
-	defer func() { openBrowserFunc = oldOpenBrowser }()
+	ctx := t.Context()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel in the background after a short delay
+	var mu sync.Mutex
+	var browserURL string
+	openBrowserMock := func(url string) error {
+		mu.Lock()
+		browserURL = url
+		mu.Unlock()
+		return nil
+	}
+
+	done := make(chan error, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
+		// Run ServeTrace and record outcome
+		done <- ServeTrace(ctx, tmpDir, nil, "127.0.0.1:0", openBrowserMock)
 	}()
 
-	err = ServeTrace(ctx, tmpDir, nil)
+	// Wait for browser URL to be set
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return browserURL != ""
+	}, 1*time.Second, 10*time.Millisecond)
+
+	mu.Lock()
+	targetURLRaw := browserURL
+	mu.Unlock()
+
+	idx := strings.Index(targetURLRaw, "url=")
+	require.Greater(t, idx, -1)
+	targetURL := targetURLRaw[idx+4:]
+
+	// Query with good origin to trigger the auto-exit
+	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+	require.NoError(t, err)
+	req.Header.Set("Origin", "https://ui.perfetto.dev")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "https://ui.perfetto.dev", resp.Header.Get("Access-Control-Allow-Origin"))
+	_ = resp.Body.Close()
+
+	// Verify that ServeTrace auto-exits on its own after serving
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeTrace did not auto-exit after serving trace")
+	}
+}
+
+func TestTraceGeneration_LargeLine(t *testing.T) {
+	t.Parallel()
+	largeOutput := strings.Repeat("A", 1024*1024)
+	input := `{"Time":"2026-06-03T12:00:00.000000Z","Action":"output","Package":"pkg1","Test":"TestA","Output":"` + largeOutput + `"}` + "\n"
+
+	events, err := parseTraceEvents(strings.NewReader(input), 0)
+	require.NoError(t, err)
+	for _, ev := range events {
+		assert.NotEqual(t, "X", ev.Ph, "Should not produce a duration event for output action")
+	}
+}
+
+func TestWriteTrace_EmptyMatches(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	err := WriteTrace(tmpDir, nil)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, "trace.json")) //nolint:gosec // G304: path from filepath.Join
+	require.NoError(t, err)
+	assert.Equal(t, "[]", strings.TrimSpace(string(content)))
+}
+
+func TestWriteTrace_InvalidIterationName(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(tmpDir, "iteration-invalid.log.jsonl"), []byte("{}"), 0600)
+	require.NoError(t, err)
+
+	err = WriteTrace(tmpDir, &Report{})
 	require.NoError(t, err)
 }

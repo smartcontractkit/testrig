@@ -38,6 +38,7 @@ type traceKey struct {
 // parseTraceEvents parses a go test -json stream for a single iteration and returns trace events.
 func parseTraceEvents(r io.Reader, iter int) ([]TraceEvent, error) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 	startTimes := make(map[traceKey]time.Time)
 	var events []TraceEvent
 	var lastSeenTime time.Time
@@ -194,10 +195,13 @@ func WriteTrace(resultsDir string, rep *Report) error {
 		return iterNumber(matches[i]) < iterNumber(matches[j])
 	})
 
-	var allEvents []TraceEvent
+	allEvents := []TraceEvent{}
 
 	for _, path := range matches {
 		iter := iterNumber(path)
+		if iter < 0 {
+			continue
+		}
 		f, err := os.Open(path) //nolint:gosec // G304: path from filepath.Glob
 		if err != nil {
 			return err
@@ -246,28 +250,47 @@ func WriteTrace(resultsDir string, rep *Report) error {
 	return os.WriteFile(filepath.Join(resultsDir, "trace.json"), b, 0600)
 }
 
-// openBrowserFunc is a package-level variable to allow mocking browser launch in tests.
-var openBrowserFunc = openBrowser
-
-// ServeTrace starts a local HTTP server on port 9001 to serve trace.json, opens the browser to Perfetto UI, and blocks until ctx is cancelled.
-func ServeTrace(ctx context.Context, resultsDir string, out *output.Printer) error {
+// ServeTrace starts a local HTTP server on the given address (defaults to 127.0.0.1:9001) to serve trace.json, opens the browser to Perfetto UI, and blocks until ctx is cancelled.
+func ServeTrace(
+	ctx context.Context,
+	resultsDir string,
+	out *output.Printer,
+	addr string,
+	openBrowserCB func(string) error,
+) error {
 	tracePath := filepath.Join(resultsDir, "trace.json")
 	if _, err := os.Stat(tracePath); err != nil {
 		return fmt.Errorf("trace file not found at %s: %w", tracePath, err)
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:9001")
+	if addr == "" {
+		addr = "127.0.0.1:9001"
+	}
+	if openBrowserCB == nil {
+		openBrowserCB = openBrowser
+	}
+
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf(
-			"failed to bind local port 9001 (is another trace server or perfetto instance running?): %w",
+			"failed to bind local port %s (is another trace server or perfetto instance running?): %w",
+			addr,
 			err,
 		)
 	}
 	defer func() { _ = listener.Close() }()
 
+	srvCtx, srvCancel := context.WithCancel(ctx)
+	defer srvCancel()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/trace.json", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin != "" && origin != "https://ui.perfetto.dev" {
+			http.Error(w, "Forbidden origin", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", "https://ui.perfetto.dev")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		w.Header().Set("Access-Control-Allow-Private-Network", "true")
@@ -275,6 +298,12 @@ func ServeTrace(ctx context.Context, resultsDir string, out *output.Printer) err
 			return
 		}
 		http.ServeFile(w, r, tracePath)
+
+		// Auto-exit after serving
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			srvCancel()
+		}()
 	})
 
 	server := &http.Server{
@@ -297,9 +326,9 @@ func ServeTrace(ctx context.Context, resultsDir string, out *output.Printer) err
 		fmt.Println("Press Ctrl+C to stop serving...")
 	}
 
-	_ = openBrowserFunc(perfettoURL)
+	_ = openBrowserCB(perfettoURL)
 
-	<-ctx.Done()
+	<-srvCtx.Done()
 	if out != nil {
 		out.HumanStderr("\nStopping server...\n")
 	} else {
