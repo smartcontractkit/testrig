@@ -974,7 +974,12 @@ func startDiagnoseAnalyzingProgress(out *output.Printer, afterLiveProgress bool)
 		return func(error) {}
 	}
 	if afterLiveProgress {
-		_, _ = fmt.Fprint(out.HumanStderrWriter(), "\r\033[K\n")
+		if out.LiveInlineProgress() {
+			out.ClearInline()
+			_, _ = fmt.Fprint(out.HumanStderrWriter(), "\n")
+		} else {
+			_, _ = fmt.Fprint(out.HumanStderrWriter(), "\r\033[2K\n")
+		}
 	}
 
 	analyzeStart := time.Now()

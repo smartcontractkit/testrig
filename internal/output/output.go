@@ -21,6 +21,9 @@ type Printer struct {
 	stderrFD        uintptr
 	liveInline      bool // human mode and stderr is a TTY (safe for \r progress)
 	inlineLastLines int
+	inlineLastCols  int    // terminal width when inlineLastLine was drawn
+	inlineLastLine  string // last RedrawInline payload (for resize-aware erase)
+	testTermColumns int    // when >0, overrides termColumns (tests only)
 }
 
 // New builds a production Printer. liveInline is enabled when stderrFD points
@@ -102,9 +105,25 @@ func (p *Printer) Stdoutln(a ...any) {
 	_, _ = fmt.Fprintln(p.stdout, a...)
 }
 
-// SetInlineLastLinesForTest sets tracked wrapped line count (output package tests only).
+// SetTermColumnsForTest pins TermColumns/RedrawInline width (0 restores default).
+func (p *Printer) SetTermColumnsForTest(cols int) {
+	p.testTermColumns = cols
+}
+
+// SetInlineLastLinesForTest sets tracked wrapped line count without a prior draw.
 func (p *Printer) SetInlineLastLinesForTest(n int) {
 	p.inlineLastLines = n
+}
+
+// InlineLastLinesForTest returns the tracked wrapped line count after RedrawInline.
+func (p *Printer) InlineLastLinesForTest() int {
+	return p.inlineLastLines
+}
+
+func (p *Printer) resetInlineState() {
+	p.inlineLastLines = 0
+	p.inlineLastCols = 0
+	p.inlineLastLine = ""
 }
 
 // ClearInline clears live inline progress lines on stderr when active.
@@ -112,6 +131,6 @@ func (p *Printer) ClearInline() {
 	if !p.liveInline {
 		return
 	}
-	eraseInlineLines(p.stderr, p.inlineLastLines)
-	p.inlineLastLines = 0
+	eraseInlineLines(p.stderr, p.inlineEraseLineCount())
+	p.resetInlineState()
 }

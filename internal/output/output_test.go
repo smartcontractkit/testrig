@@ -27,7 +27,7 @@ func TestNewForTest_liveInline(t *testing.T) {
 	var stderr strings.Builder
 	p := NewForTest(false, io.Discard, &stderr, true)
 	require.True(t, p.LiveInlineProgress())
-	p.inlineLastLines = 1
+	p.SetInlineLastLinesForTest(1)
 	p.ClearInline()
 	require.Equal(t, "\r\x1b[2K", stderr.String())
 
