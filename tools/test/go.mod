@@ -1,10 +1,10 @@
 module github.com/smartcontractkit/testrig/tools/test
 
-go 1.26.3
+go 1.26.4
 
 replace github.com/smartcontractkit/testrig => ../..
 
-require github.com/smartcontractkit/testrig v0.0.0-00010101000000-000000000000
+require github.com/smartcontractkit/testrig v0.0.3
 
 require (
 	charm.land/fang/v2 v2.0.1 // indirect
