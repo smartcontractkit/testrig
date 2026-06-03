@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 
 	"github.com/spf13/cobra"
@@ -19,7 +18,7 @@ func finishResourceCleanup(cmd *cobra.Command, err *error, cleanup func() error)
 		return
 	}
 	if cerr := cleanup(); cerr != nil {
-		fmt.Fprintf(os.Stderr, "%s: resource cleanup failed: %v\n", rootCLIName(cmd), cerr)
+		fmt.Fprintf(cmd.ErrOrStderr(), "%s: resource cleanup failed: %v\n", rootCLIName(cmd), cerr)
 		if *err == nil {
 			*err = cerr
 		}

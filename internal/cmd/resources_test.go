@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -73,22 +71,11 @@ func TestFinishResourceCleanupStderrUsesRootCLIName(t *testing.T) {
 	}
 	require.NotNil(t, sub)
 
-	stderrR, stderrW, err := os.Pipe()
-	require.NoError(t, err)
-	prevStderr := os.Stderr
-	os.Stderr = stderrW
-	t.Cleanup(func() {
-		os.Stderr = prevStderr
-		_ = stderrR.Close()
-	})
+	var buf bytes.Buffer
+	sub.SetErr(&buf)
 
 	var runErr error
 	finishResourceCleanup(sub, &runErr, func() error { return errors.New("cleanup failed") })
-	require.NoError(t, stderrW.Close())
-
-	var buf bytes.Buffer
-	_, err = io.Copy(&buf, stderrR)
-	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "cltest: resource cleanup failed:")
 }
 
