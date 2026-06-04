@@ -223,12 +223,16 @@ func Diagnose(
 
 	reportPath := filepath.Join(resultsDir, "report.json")
 	csvPath := diagnoseCSVPath(resultsDir, report)
-	tracePath := ""
+	traceJSONPath := ""
 	if conf.Trace {
-		tracePath = resultsDir
+		if err := WriteTrace(out, resultsDir, report); err != nil {
+			out.Stderrf("write trace: %v\n", err)
+			return err
+		}
+		traceJSONPath = filepath.Join(resultsDir, "trace.json")
 	}
 	if out.AIOutput() {
-		completeJSON, err := marshalAIDiagnoseComplete(resultsDir, reportPath, tracePath, report)
+		completeJSON, err := marshalAIDiagnoseComplete(resultsDir, reportPath, traceJSONPath, report)
 		if err != nil {
 			out.Stderrf("marshal ai complete: %v\n", err)
 			return err
@@ -243,12 +247,8 @@ func Diagnose(
 	if report != nil {
 		PrintSummary(out.HumanStderrWriter(), report)
 	}
-	printDiagnoseArtifactsFooter(out, resultsDir, reportPath, csvPath, tracePath)
+	printDiagnoseArtifactsFooter(out, resultsDir, reportPath, csvPath, traceJSONPath)
 	if conf.Trace {
-		if err := WriteTrace(out, resultsDir, report); err != nil {
-			out.Stderrf("write trace: %v\n", err)
-			return err
-		}
 		if err := ServeTrace(ctx, resultsDir, out, TraceServeOptions{}); err != nil {
 			out.Stderrf("serve trace: %v\n", err)
 			return err
@@ -869,35 +869,6 @@ func WarnDiagnoseGoTestTrace(goTestArgs []string) error {
 		)
 	}
 	return nil
-}
-
-// IsSinglePackageTarget returns true if the goTestArgs target exactly one package.
-func IsSinglePackageTarget(ctx context.Context, repoRoot string, goTestArgs []string) (bool, error) {
-	patterns := packagePatternsFromEnd(goTestArgs)
-	if len(patterns) == 0 {
-		patterns = []string{"."}
-	}
-	moduleDir, adjustedPatterns, err := resolveModuleDir(repoRoot, patterns)
-	if err != nil {
-		return false, err
-	}
-	cmdArgs := append([]string{"list"}, adjustedPatterns...)
-	//nolint:gosec // G204: sub-process with dynamically resolved packages by design
-	cmd := exec.CommandContext(ctx, "go", cmdArgs...)
-	cmd.Dir = moduleDir
-	out, err := cmd.Output()
-	if err != nil {
-		return false, nil // Let go test run and fail with proper compilation/argument errors
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	var pkgs []string
-	for _, l := range lines {
-		trimmed := strings.TrimSpace(l)
-		if trimmed != "" {
-			pkgs = append(pkgs, trimmed)
-		}
-	}
-	return len(pkgs) == 1, nil
 }
 
 // filterDiagnoseUserGoTestArgs removes -json/--json from the go test flag

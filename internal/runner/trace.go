@@ -18,6 +18,10 @@ import (
 	"github.com/smartcontractkit/testrig/internal/output"
 )
 
+// traceListenAddr is the fixed local address Perfetto loads trace.json from.
+// Production always uses this port; tests bind an ephemeral port via TraceServeOptions.Addr.
+const traceListenAddr = "127.0.0.1:9001"
+
 // TraceEvent represents a single event in Chrome's Trace Event Format.
 type TraceEvent struct {
 	Name string         `json:"name"`
@@ -264,11 +268,13 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 
 // TraceServeOptions groups parameters for ServeTrace.
 type TraceServeOptions struct {
+	// Addr overrides traceListenAddr. Production leaves this empty; tests set "127.0.0.1:0".
 	Addr        string
 	OpenBrowser func(string) error
 }
 
-// ServeTrace starts a local HTTP server on the given address (defaults to 127.0.0.1:9001) to serve trace.json, opens the browser to Perfetto UI, and blocks until ctx is cancelled.
+// ServeTrace serves trace.json at traceListenAddr, opens the Perfetto UI in a browser,
+// and blocks until the trace is fetched or ctx is cancelled.
 func ServeTrace(
 	ctx context.Context,
 	resultsDir string,
@@ -282,7 +288,7 @@ func ServeTrace(
 
 	addr := opts.Addr
 	if addr == "" {
-		addr = "127.0.0.1:9001"
+		addr = traceListenAddr
 	}
 	openBrowserCB := opts.OpenBrowser
 	if openBrowserCB == nil {
@@ -341,7 +347,14 @@ func ServeTrace(
 		fmt.Printf("\nOpening perfetto.dev trace in browser...\n")
 	}
 
-	_ = openBrowserCB(perfettoURL)
+	if err := openBrowserCB(perfettoURL); err != nil {
+		msg := fmt.Sprintf("open browser: %v\nOpen manually: %s\n", err, perfettoURL)
+		if out != nil {
+			out.Stderrf("%s", msg)
+		} else {
+			fmt.Fprint(os.Stderr, msg)
+		}
+	}
 
 	<-srvCtx.Done()
 

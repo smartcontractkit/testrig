@@ -19,8 +19,7 @@ var wdKey = wdKeyType{}
 func newTraceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "trace [results-dir-or-file]",
-		Short: "Open Perfetto trace visualization",
-		Long:  `Open the Perfetto trace visualization for a 'diagnose' run.`,
+		Short: "Open test trace visualization",
 		Example: `
 # Open the trace visualization for the latest 'diagnose' run
 testrig trace

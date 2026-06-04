@@ -70,7 +70,7 @@ use -count>1 to repeat inside one go test invocation. With --shuffle-seed, a per
 	cmd.Flags().
 		Bool("shuffle-seed", false, "randomize test order each iteration; a unique seed is generated per iteration and recorded in report.json for reproduction")
 	cmd.Flags().
-		Bool("trace", false, "build a visual trace of the test execution per iteration")
+		Bool("trace", false, "visualize the test execution traces")
 
 	return cmd
 }
