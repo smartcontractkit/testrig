@@ -2,12 +2,15 @@ package runner
 
 import (
 	"fmt"
-	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/smartcontractkit/testrig/internal/output"
 	"github.com/smartcontractkit/testrig/internal/termstyle"
 )
 
@@ -207,59 +210,152 @@ func diagnoseParallelRemainingETA(
 	return estimated
 }
 
-// renderDiagnoseProgressLine writes one status line to w when liveInline is true
-// (TTY stderr in human mode). Otherwise it is a no-op so logs are not spammed.
-// diagnoseRunStart is when the overall diagnose run began; if zero, only the
-// per-iteration bracket is shown.
-func renderDiagnoseProgressLine(
-	w io.Writer,
+func buildDiagnoseProgressLineParts(
 	iteration, iterations int,
 	iterElapsed time.Duration,
 	diagnoseRunStart time.Time,
 	now time.Time,
-	liveInline bool,
-) {
-	if !liveInline {
-		return
-	}
+) (core string, optional []string) {
 	iterBracket := fmt.Sprintf("iter %d/%d (%s)", iteration, iterations, iterElapsed.Round(time.Second).String())
-	line := progressBracket(termstyle.Label.Render(iterBracket))
-	if !diagnoseRunStart.IsZero() {
-		runEl := max(now.Sub(diagnoseRunStart), 0)
-		line += "  " + progressBracket(termstyle.Muted.Render(runEl.Round(time.Second).String()))
-		completedCount := iteration - 1
-		if completedCount > 0 {
-			// Freeze completed wall so avgPerIter does not grow each tick (~ETA counts up).
-			completedWall := max(runEl-iterElapsed, 0)
-			avgPerIter := completedWall / time.Duration(completedCount)
-			remainingIters := iterations - completedCount
-			estimated := diagnoseRemainingETA(remainingIters, avgPerIter, iterElapsed)
-			if estimated > 0 {
-				line += formatETA(estimated)
-			}
+	core = progressBracket(termstyle.Label.Render(iterBracket))
+	if diagnoseRunStart.IsZero() {
+		return core, nil
+	}
+	runEl := max(now.Sub(diagnoseRunStart), 0)
+	optional = append(optional, "  "+progressBracket(termstyle.Muted.Render(runEl.Round(time.Second).String())))
+	completedCount := iteration - 1
+	if completedCount > 0 {
+		// Freeze completed wall so avgPerIter does not grow each tick (~ETA counts up).
+		completedWall := max(runEl-iterElapsed, 0)
+		avgPerIter := completedWall / time.Duration(completedCount)
+		remainingIters := iterations - completedCount
+		estimated := diagnoseRemainingETA(remainingIters, avgPerIter, iterElapsed)
+		if estimated > 0 {
+			optional = append(optional, formatETA(estimated))
 		}
 	}
-	_, _ = fmt.Fprint(w, "\r\033[K")
-	_, _ = fmt.Fprint(w, line)
+	return core, optional
 }
 
-func renderParallelDiagnoseProgressLine(w io.Writer, prog *parallelDiagnoseProgress, now time.Time, liveInline bool) {
-	if !liveInline || prog == nil {
+// fitProgressLineParts joins core with optional segments that fit cols.
+// When truncate is true, hard-truncates the result as a last resort.
+func fitProgressLineParts(core string, optional []string, cols int, truncate bool) string {
+	if cols < 1 {
+		cols = 80
+	}
+	line := core
+	for _, part := range optional {
+		if part == "" {
+			continue
+		}
+		next := line + part
+		if ansi.StringWidth(next) <= cols {
+			line = next
+		}
+	}
+	if truncate && ansi.StringWidth(line) > cols {
+		line = ansi.Truncate(line, cols, "…")
+	}
+	return line
+}
+
+func fitDiagnoseProgressLine(
+	iteration, iterations int,
+	iterElapsed time.Duration,
+	diagnoseRunStart time.Time,
+	now time.Time,
+	cols int,
+) string {
+	core, optional := buildDiagnoseProgressLineParts(iteration, iterations, iterElapsed, diagnoseRunStart, now)
+	return fitProgressLineParts(core, optional, cols, true)
+}
+
+func parallelActivesPart(actives []activeIterElapsed, maxShown int) string {
+	if len(actives) == 0 {
+		return ""
+	}
+	shown := actives
+	extra := 0
+	if maxShown >= 0 && len(actives) > maxShown {
+		shown = actives[:maxShown]
+		extra = len(actives) - maxShown
+	}
+	var sb strings.Builder
+	for i, a := range shown {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(termstyle.Label.Render(fmt.Sprintf("%d(%s)", a.iteration+1, a.elapsed.String())))
+	}
+	if extra > 0 {
+		if sb.Len() > 0 {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(termstyle.Muted.Render("+" + strconv.Itoa(extra)))
+	}
+	return "  " + progressBracket(sb.String())
+}
+
+func fitParallelDiagnoseProgressLine(
+	core string,
+	actives []activeIterElapsed,
+	poolPart, etaPart string,
+	cols int,
+) string {
+	if cols < 1 {
+		cols = 80
+	}
+	var best string
+	bestWidth := -1
+	for maxShown := len(actives); maxShown >= 0; maxShown-- {
+		var optional []string
+		if part := parallelActivesPart(actives, maxShown); part != "" {
+			optional = append(optional, part)
+		}
+		if poolPart != "" {
+			optional = append(optional, poolPart)
+		}
+		if etaPart != "" {
+			optional = append(optional, etaPart)
+		}
+		line := fitProgressLineParts(core, optional, cols, false)
+		w := ansi.StringWidth(line)
+		if w <= cols && w > bestWidth {
+			best = line
+			bestWidth = w
+		}
+	}
+	if best != "" {
+		return ansi.Truncate(best, cols, "…")
+	}
+	return ansi.Truncate(core, cols, "…")
+}
+
+// renderDiagnoseProgressLine writes one status line when live inline progress is active.
+// diagnoseRunStart is when the overall diagnose run began; if zero, only the
+// per-iteration bracket is shown.
+func renderDiagnoseProgressLine(
+	out *output.Printer,
+	iteration, iterations int,
+	iterElapsed time.Duration,
+	diagnoseRunStart time.Time,
+	now time.Time,
+) {
+	if out == nil || !out.LiveInlineProgress() {
+		return
+	}
+	line := fitDiagnoseProgressLine(iteration, iterations, iterElapsed, diagnoseRunStart, now, out.TermColumns())
+	out.RedrawInline(line)
+}
+
+func renderParallelDiagnoseProgressLine(out *output.Printer, prog *parallelDiagnoseProgress, now time.Time) {
+	if out == nil || !out.LiveInlineProgress() || prog == nil {
 		return
 	}
 	completed, totalIters, actives, poolElapsed, completedWall, completedDurationSum := prog.renderSnapshot(now)
-	line := progressBracket(termstyle.Label.Render(fmt.Sprintf("%d/%d", completed, totalIters)))
-	if len(actives) > 0 {
-		var sb strings.Builder
-		for i, a := range actives {
-			if i > 0 {
-				sb.WriteByte(' ')
-			}
-			sb.WriteString(termstyle.Label.Render(fmt.Sprintf("%d(%s)", a.iteration+1, a.elapsed.String())))
-		}
-		line += "  " + progressBracket(sb.String())
-	}
-	line += "  " + progressBracket(termstyle.Muted.Render(poolElapsed.String()))
+	core := progressBracket(termstyle.Label.Render(fmt.Sprintf("%d/%d", completed, totalIters)))
+	poolPart := "  " + progressBracket(termstyle.Muted.Render(poolElapsed.String()))
+	var etaPart string
 	if completed > 0 && totalIters > completed {
 		avgPerIter := completedWall / time.Duration(completed) // fallback when no durations recorded yet
 		if completedDurationSum > 0 {
@@ -269,20 +365,13 @@ func renderParallelDiagnoseProgressLine(w io.Writer, prog *parallelDiagnoseProgr
 		}
 		estimated := diagnoseParallelRemainingETA(totalIters, completed, actives, avgPerIter)
 		if estimated > 0 {
-			line += formatETA(estimated)
+			etaPart = formatETA(estimated)
 		}
 	}
-	_, _ = fmt.Fprint(w, "\r\033[K")
-	_, _ = fmt.Fprint(w, line)
+	line := fitParallelDiagnoseProgressLine(core, actives, poolPart, etaPart, out.TermColumns())
+	out.RedrawInline(line)
 }
 
 func formatETA(estimated time.Duration) string {
 	return "  " + progressBracket(termstyle.Muted.Render("~"+estimated.Round(time.Second).String()+" left"))
-}
-
-func ellipsizeRight(s string, maxLen int) string {
-	if maxLen <= 3 || len(s) <= maxLen {
-		return s
-	}
-	return "…" + s[len(s)-(maxLen-3):]
 }

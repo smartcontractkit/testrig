@@ -142,7 +142,23 @@ func TestStartDiagnoseAnalyzingProgress_startsNewLineAfterLiveProgress(t *testin
 	stop(nil)
 
 	got := stderr.String()
-	assert.True(t, strings.HasPrefix(got, "\r\u001b[K\n"), "clears live progress before analyze footer")
+	assert.True(t, strings.HasPrefix(got, "\r\u001b[2K\n"), "clears live progress before analyze footer")
+	assert.NotContains(t, stripANSI(got), "✅")
+}
+
+func TestStartDiagnoseAnalyzingProgress_afterLiveProgress_clearsWrappedInline(t *testing.T) {
+	t.Parallel()
+	var stderr strings.Builder
+	out := output.NewForTest(false, io.Discard, &stderr, true)
+	out.SetTermColumnsForTest(40)
+	out.SetInlineLastLinesForTest(2)
+
+	stop := startDiagnoseAnalyzingProgress(out, true)
+	stop(nil)
+
+	got := stderr.String()
+	assert.Contains(t, got, "\x1b[1A")
+	assert.Contains(t, got, "\r\u001b[2K")
 	assert.NotContains(t, stripANSI(got), "✅")
 }
 
@@ -160,7 +176,7 @@ func TestStartDiagnoseAnalyzingProgress_liveInline_updatesDuration(t *testing.T)
 	assert.NotContains(t, got, "analyzing...")
 	assert.Regexp(t, `\[[0-9]+s\]`, got)
 	assert.NotContains(t, stripANSI(got), "✅")
-	assert.Contains(t, got, "\r\u001b[K")
+	assert.Contains(t, got, "\r\u001b[2K")
 	assert.False(t, strings.HasSuffix(got, "\n"), "success stop clears inline line without trailing newline")
 }
 
@@ -964,13 +980,12 @@ func TestRunDiagnoseIterations_serialLiveProgressMutex_noMergedProgressAndTableL
 					case <-tick.C:
 						p.SerialProgressMu.Lock()
 						renderDiagnoseProgressLine(
-							p.Out.HumanStderrWriter(),
+							p.Out,
 							iter,
 							iters,
 							time.Since(iterStart),
 							p.DiagnoseRunStart,
 							time.Now(),
-							true,
 						)
 						p.SerialProgressMu.Unlock()
 					}
