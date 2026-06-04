@@ -4,7 +4,7 @@ go 1.26.4
 
 replace github.com/smartcontractkit/testrig => ../..
 
-require github.com/smartcontractkit/testrig v0.0.3
+require github.com/smartcontractkit/testrig v0.0.4
 
 require (
 	charm.land/fang/v2 v2.0.1 // indirect
@@ -32,5 +32,6 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 )
