@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,41 +18,52 @@ var wdKey = wdKeyType{}
 
 func newTraceCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "trace [results-dir]",
-		Short: "Serve and open local trace files in Perfetto UI automatically",
+		Use:   "trace [results-dir-or-file]",
+		Short: "Open Perfetto trace visualization",
+		Long:  `Open the Perfetto trace visualization for a 'diagnose' run.`,
+		Example: `
+# Open the trace visualization for the latest 'diagnose' run
+testrig trace
+
+# Open the trace visualization for a specific 'diagnose' run
+testrig trace diagnose-20260604T120000Z
+`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var resultsDir string
-			var err error
-			if len(args) > 0 {
-				path := args[0]
-				info, err := os.Stat(path)
-				if err == nil && !info.IsDir() {
-					resultsDir = filepath.Dir(path)
-				} else {
-					resultsDir = path
-				}
-			} else {
+			if len(args) == 0 {
 				wd := "."
 				if val, ok := cmd.Context().Value(wdKey).(string); ok {
 					wd = val
 				}
+				var err error
 				resultsDir, err = findLatestResultsDir(wd)
 				if err != nil {
 					return err
 				}
+			} else {
+				path := args[0]
+				info, err := os.Stat(path)
+				if err != nil {
+					return err
+				}
+				if info.IsDir() {
+					resultsDir = path
+				} else {
+					if filepath.Base(path) == "trace.json" {
+						resultsDir = filepath.Dir(path)
+					} else {
+						return fmt.Errorf("trace file must be named trace.json: %s", path)
+					}
+				}
 			}
 
-			addr, err := cmd.Flags().GetString("trace-addr")
-			if err != nil {
-				return err
+			traceJSON := filepath.Join(resultsDir, "trace.json")
+			if _, err := os.Stat(traceJSON); err != nil {
+				return fmt.Errorf("trace.json not found in %s", resultsDir)
 			}
-
-			return runner.ServeTrace(cmd.Context(), resultsDir, nil, runner.TraceServeOptions{
-				Addr: addr,
-			})
+			return runner.ServeTrace(cmd.Context(), resultsDir, nil, runner.TraceServeOptions{})
 		},
 	}
-	cmd.Flags().String("trace-addr", "127.0.0.1:9001", "local address/port to serve the trace visualizer on")
 	return cmd
 }
 

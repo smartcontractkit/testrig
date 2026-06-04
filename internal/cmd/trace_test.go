@@ -62,11 +62,10 @@ func TestFindLatestResultsDir(t *testing.T) {
 	assert.Equal(t, d2, latest)
 }
 
-func TestTraceCommand_Flags(t *testing.T) {
+func TestTraceCommand(t *testing.T) {
 	t.Parallel()
 	rootCmd := NewRootCommand(hooks.RunOptions{})
 	traceCmd, _, err := rootCmd.Find([]string{"trace"})
 	require.NoError(t, err)
-	require.NotNil(t, traceCmd.Flag("trace-addr"))
-	assert.Equal(t, "127.0.0.1:9001", traceCmd.Flag("trace-addr").DefValue)
+	assert.NotNil(t, traceCmd)
 }

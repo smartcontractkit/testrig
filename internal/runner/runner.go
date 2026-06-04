@@ -220,14 +220,13 @@ func Diagnose(
 		out.Stderrf("write csv: %v\n", err)
 		return err
 	}
-	if err := WriteTrace(out, resultsDir, report); err != nil {
-		out.Stderrf("write trace: %v\n", err)
-		return err
-	}
 
 	reportPath := filepath.Join(resultsDir, "report.json")
 	csvPath := diagnoseCSVPath(resultsDir, report)
-	tracePath := filepath.Join(resultsDir, "trace.json")
+	tracePath := ""
+	if conf.Trace {
+		tracePath = resultsDir
+	}
 	if out.AIOutput() {
 		completeJSON, err := marshalAIDiagnoseComplete(resultsDir, reportPath, tracePath, report)
 		if err != nil {
@@ -245,7 +244,11 @@ func Diagnose(
 		PrintSummary(out.HumanStderrWriter(), report)
 	}
 	printDiagnoseArtifactsFooter(out, resultsDir, reportPath, csvPath, tracePath)
-	if conf.OpenTrace {
+	if conf.Trace {
+		if err := WriteTrace(out, resultsDir, report); err != nil {
+			out.Stderrf("write trace: %v\n", err)
+			return err
+		}
 		if err := ServeTrace(ctx, resultsDir, out, TraceServeOptions{}); err != nil {
 			out.Stderrf("serve trace: %v\n", err)
 			return err
@@ -840,25 +843,61 @@ func printDiagnoseRunTimeEstimate(out *output.Printer, conf *config.App, goTestA
 	return nil
 }
 
-// WarnDiagnoseGoTestCount prints hints when the user sets -count on go test, and
-// returns an error if -count values in the go test flag section are malformed.
-func WarnDiagnoseGoTestCount(w io.Writer, goTestArgs []string) error {
-	set, n, err := parseDiagnoseGoTestCount(goTestArgs)
+// WarnDiagnoseGoTestCount returns an error if the user sets -count on go test.
+func WarnDiagnoseGoTestCount(goTestArgs []string) error {
+	set, _, err := parseDiagnoseGoTestCount(goTestArgs)
 	if err != nil {
 		return err
 	}
-	if !set {
-		return nil
+	if set {
+		return fmt.Errorf(
+			"manual -count flag detected; prefer diagnose --iterations for repetition. -count is not allowed in go test flags",
+		)
 	}
-	if n == 1 {
-		_, _ = fmt.Fprintln(w, termstyle.Muted.Render(
-			"note: -count=1 is unnecessary; diagnose adds -count=1 when you omit it."))
-		return nil
-	}
-	_, _ = fmt.Fprintln(w, termstyle.Muted.Render(
-		"note: prefer diagnose --iterations for repetition; use -count>1 only if you want to avoid overhead between diagnose iterations (e.g. DB setup/teardown).",
-	))
 	return nil
+}
+
+// WarnDiagnoseGoTestTrace returns an error if the user sets -trace on go test.
+func WarnDiagnoseGoTestTrace(goTestArgs []string) error {
+	_, set, err := findLastFlagValue(goTestArgs, "-trace")
+	if err != nil {
+		return err
+	}
+	if set {
+		return fmt.Errorf(
+			"manual -trace flag detected; use diagnose --trace instead. -trace is not allowed in go test flags",
+		)
+	}
+	return nil
+}
+
+// IsSinglePackageTarget returns true if the goTestArgs target exactly one package.
+func IsSinglePackageTarget(ctx context.Context, repoRoot string, goTestArgs []string) (bool, error) {
+	patterns := packagePatternsFromEnd(goTestArgs)
+	if len(patterns) == 0 {
+		patterns = []string{"."}
+	}
+	moduleDir, adjustedPatterns, err := resolveModuleDir(repoRoot, patterns)
+	if err != nil {
+		return false, err
+	}
+	cmdArgs := append([]string{"list"}, adjustedPatterns...)
+	//nolint:gosec // G204: sub-process with dynamically resolved packages by design
+	cmd := exec.CommandContext(ctx, "go", cmdArgs...)
+	cmd.Dir = moduleDir
+	out, err := cmd.Output()
+	if err != nil {
+		return false, nil // Let go test run and fail with proper compilation/argument errors
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var pkgs []string
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" {
+			pkgs = append(pkgs, trimmed)
+		}
+	}
+	return len(pkgs) == 1, nil
 }
 
 // filterDiagnoseUserGoTestArgs removes -json/--json from the go test flag
@@ -874,7 +913,8 @@ func filterDiagnoseUserGoTestArgs(args []string) []string {
 	prefix := args[:split]
 	suffix := args[split:]
 	var out []string
-	for _, a := range prefix {
+	for i := range prefix {
+		a := prefix[i]
 		if a == "-json" || a == "--json" {
 			continue
 		}

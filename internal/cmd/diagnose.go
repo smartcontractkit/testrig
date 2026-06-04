@@ -35,7 +35,10 @@ use -count>1 to repeat inside one go test invocation. With --shuffle-seed, a per
 				return err
 			}
 
-			if err = runner.WarnDiagnoseGoTestCount(out.HumanStderrWriter(), args); err != nil {
+			if err = runner.WarnDiagnoseGoTestCount(args); err != nil {
+				return err
+			}
+			if err = runner.WarnDiagnoseGoTestTrace(args); err != nil {
 				return err
 			}
 
@@ -66,8 +69,8 @@ use -count>1 to repeat inside one go test invocation. With --shuffle-seed, a per
 		StringSlice("fail-fast-on", nil, `stop this diagnose run immediately when an iteration matches one or more categories: "failure", "timeout", "slow", or "any"`)
 	cmd.Flags().
 		Bool("shuffle-seed", false, "randomize test order each iteration; a unique seed is generated per iteration and recorded in report.json for reproduction")
-	cmd.Flags().Bool("open-trace", false, "automatically open the trace visualizer in Perfetto after the run completes")
-	cmd.Flags().String("trace-addr", "127.0.0.1:9001", "local address/port to serve the trace visualizer on")
+	cmd.Flags().
+		Bool("trace", false, "build a visual trace of the test execution per iteration")
 
 	return cmd
 }

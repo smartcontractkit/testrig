@@ -234,32 +234,43 @@ func TestWarnDiagnoseGoTestCount(t *testing.T) {
 
 	t.Run("count 1", func(t *testing.T) {
 		t.Parallel()
-		var buf strings.Builder
-		require.NoError(t, WarnDiagnoseGoTestCount(&buf, []string{"-count=1", "./pkg"}))
-		assert.Contains(t, buf.String(), "unnecessary")
+		err := WarnDiagnoseGoTestCount([]string{"-count=1", "./pkg"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "manual -count flag detected")
 	})
 
 	t.Run("count greater than 1", func(t *testing.T) {
 		t.Parallel()
-		var buf strings.Builder
-		require.NoError(t, WarnDiagnoseGoTestCount(&buf, []string{"-count=5"}))
-		assert.Contains(t, buf.String(), "prefer")
-		assert.Contains(t, buf.String(), "iterations")
+		err := WarnDiagnoseGoTestCount([]string{"-count=5"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "manual -count flag detected")
 	})
 
 	t.Run("no count", func(t *testing.T) {
 		t.Parallel()
-		var buf strings.Builder
-		require.NoError(t, WarnDiagnoseGoTestCount(&buf, []string{"./..."}))
-		assert.Empty(t, strings.TrimSpace(buf.String()))
+		require.NoError(t, WarnDiagnoseGoTestCount([]string{"./..."}))
 	})
 
 	t.Run("invalid non positive count", func(t *testing.T) {
 		t.Parallel()
-		var buf strings.Builder
-		err := WarnDiagnoseGoTestCount(&buf, []string{"-count=0", "./..."})
+		err := WarnDiagnoseGoTestCount([]string{"-count=0", "./..."})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "positive integer")
+	})
+}
+
+func TestWarnDiagnoseGoTestTrace(t *testing.T) {
+	t.Parallel()
+
+	t.Run("trace set", func(t *testing.T) {
+		t.Parallel()
+		err := WarnDiagnoseGoTestTrace([]string{"-trace=trace.out", "./pkg"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "manual -trace flag detected")
+	})
+
+	t.Run("no trace", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, WarnDiagnoseGoTestTrace([]string{"./..."}))
 	})
 }
 

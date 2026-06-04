@@ -336,9 +336,9 @@ func ServeTrace(
 	perfettoURL := fmt.Sprintf("https://ui.perfetto.dev/#!/?url=http://%s/trace.json", listener.Addr().String())
 
 	if out != nil {
-		out.HumanStderr(fmt.Sprintf("See test trace at %s\n", perfettoURL))
+		out.HumanStderr("\nOpening perfetto.dev trace in browser...\n")
 	} else {
-		fmt.Printf("See test trace at %s\n", perfettoURL)
+		fmt.Printf("\nOpening perfetto.dev trace in browser...\n")
 	}
 
 	_ = openBrowserCB(perfettoURL)
