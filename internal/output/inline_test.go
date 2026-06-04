@@ -91,8 +91,9 @@ func TestRedrawInline_terminalResize_erasesOldWrap(t *testing.T) {
 
 	p.SetTermColumnsForTest(80)
 	p.RedrawInline(strings.Repeat("y", 50))
-	// Second draw must clear all rows from the 40-col wrap, not just the new 1-row count.
 	require.Contains(t, stderr.String(), "\x1b[2A")
+	require.Contains(t, stderr.String(), "y")
+	require.NotContains(t, stderr.String(), "\n")
 }
 
 func TestClearInline_clearsMultipleTrackedLines(t *testing.T) {
@@ -114,4 +115,28 @@ func TestInlineEraseLineCount_usesLastDrawWidth(t *testing.T) {
 	p.SetTermColumnsForTest(80)
 	p.inlineLastLines = 1 // stale count after resize before next redraw
 	require.GreaterOrEqual(t, p.inlineEraseLineCount(), 2)
+}
+
+func TestInlineEraseLineCount_usesCurrentWidthAfterShrink(t *testing.T) {
+	t.Parallel()
+	p := NewForTest(false, io.Discard, io.Discard, true)
+	p.SetTermColumnsForTest(80)
+	p.RedrawInline(strings.Repeat("a", 120))
+	p.SetTermColumnsForTest(40)
+	p.inlineLastLines = 1 // stale after terminal reflow
+	require.GreaterOrEqual(t, p.inlineEraseLineCount(), 3)
+}
+
+func TestClearInline_afterShrink_clearsReflowRows(t *testing.T) {
+	t.Parallel()
+	var stderr strings.Builder
+	p := NewForTest(false, io.Discard, &stderr, true)
+	p.SetTermColumnsForTest(80)
+	p.RedrawInline(strings.Repeat("a", 120))
+	p.SetTermColumnsForTest(40)
+	p.ClearInline()
+	p.HumanStderr("    4  pass")
+	got := stderr.String()
+	require.NotContains(t, got, "aaaa    4")
+	require.Contains(t, got, "    4  pass\n")
 }

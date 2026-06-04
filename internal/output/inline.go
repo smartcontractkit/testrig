@@ -51,16 +51,27 @@ func (p *Printer) termColumns() int {
 }
 
 // inlineEraseLineCount is how many physical rows to clear before redraw.
-// Uses max(tracked lines, lines occupied at the width of the last draw) so a
-// terminal resize between ticks still clears the old wrap layout.
+// Uses max(tracked lines, lines at the last draw width, and lines at the current
+// width) so a terminal resize between ticks still clears the reflowed layout.
 func (p *Printer) inlineEraseLineCount() int {
 	n := p.inlineLastLines
-	if p.inlineLastLine != "" && p.inlineLastCols > 0 {
-		if atLast := inlineVisualLines(p.inlineLastLine, p.inlineLastCols); atLast > n {
-			n = atLast
+	if p.inlineLastLine == "" || p.inlineLastCols <= 0 {
+		return n
+	}
+	if atLast := inlineVisualLines(p.inlineLastLine, p.inlineLastCols); atLast > n {
+		n = atLast
+	}
+	cols := p.termColumns()
+	if cols != p.inlineLastCols {
+		if atCurrent := inlineVisualLines(p.inlineLastLine, cols); atCurrent > n {
+			n = atCurrent
 		}
 	}
 	return n
+}
+
+func (p *Printer) clearInlineBeforeDraw() {
+	eraseInlineLines(p.stderr, p.inlineEraseLineCount())
 }
 
 // TermColumns returns stderr width for progress fitting (defaults to 80 when unknown).
@@ -75,7 +86,7 @@ func (p *Printer) RedrawInline(line string) {
 		return
 	}
 	cols := p.termColumns()
-	eraseInlineLines(p.stderr, p.inlineEraseLineCount())
+	p.clearInlineBeforeDraw()
 	_, _ = fmt.Fprint(p.stderr, "\r\033[2K", line)
 	p.inlineLastLine = line
 	p.inlineLastCols = cols

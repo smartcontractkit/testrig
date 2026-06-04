@@ -326,7 +326,7 @@ func fitParallelDiagnoseProgressLine(
 		}
 	}
 	if best != "" {
-		return best
+		return ansi.Truncate(best, cols, "…")
 	}
 	return ansi.Truncate(core, cols, "…")
 }

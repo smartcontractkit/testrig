@@ -300,6 +300,44 @@ func TestRenderParallelDiagnoseProgressLine_noEtaWhenNoneComplete(t *testing.T) 
 // Simulates: worker goroutine redraws the next iteration's \r line before the
 // receiver prints the previous iteration's table row (unbuffered channel
 // completion order). Without ClearInline, Fprintln appends to the progress line.
+func TestParallelProgress_clearBeforeDigest_noProgressGhost(t *testing.T) {
+	t.Parallel()
+	out, stderr := testProgressPrinter(t)
+	t0 := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := t0.Add(30 * time.Second)
+	p := newParallelDiagnoseProgressAt(20, t0)
+	p.completed = 6
+	for i := 6; i <= 9; i++ {
+		p.active[i] = parallelIterationProgress{startedAt: t0}
+	}
+	renderParallelDiagnoseProgressLine(out, p, now)
+	out.SetTermColumnsForTest(50) // reflow without another progress tick
+	out.ClearInline()
+	out.HumanStderr("    7  pass")
+	got := stderr.String()
+	require.Contains(t, got, "\r\x1b[2K")
+	require.Contains(t, got, "    7  pass\n")
+	require.NotContains(t, got, "6/20    7")
+	require.NotContains(t, got, "left]    7")
+}
+
+func TestFitParallelDiagnoseProgressLine_neverExceedsTerminalWidth(t *testing.T) {
+	t.Parallel()
+	core := progressBracket(termstyle.Label.Render("6/20"))
+	actives := []activeIterElapsed{
+		{iteration: 6, elapsed: 3 * time.Second},
+		{iteration: 7, elapsed: 3 * time.Second},
+		{iteration: 8, elapsed: 2 * time.Second},
+		{iteration: 9, elapsed: 2 * time.Second},
+	}
+	pool := "  " + progressBracket(termstyle.Muted.Render("11s"))
+	eta := formatETA(43 * time.Second)
+	for _, cols := range []int{28, 50, 120} {
+		line := fitParallelDiagnoseProgressLine(core, actives, pool, eta, cols)
+		require.LessOrEqual(t, ansi.StringWidth(line), cols, "cols=%d", cols)
+	}
+}
+
 func TestDiagnoseDigestAfterProgressNeedsClear_mergedWithoutClear(t *testing.T) {
 	t.Parallel()
 	out, stderr := testProgressPrinter(t)

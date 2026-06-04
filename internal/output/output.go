@@ -131,6 +131,6 @@ func (p *Printer) ClearInline() {
 	if !p.liveInline {
 		return
 	}
-	eraseInlineLines(p.stderr, p.inlineEraseLineCount())
+	p.clearInlineBeforeDraw()
 	p.resetInlineState()
 }
