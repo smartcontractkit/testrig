@@ -4,7 +4,7 @@ go 1.26.4
 
 replace github.com/smartcontractkit/testrig => ../..
 
-require github.com/smartcontractkit/testrig v0.0.3
+require github.com/smartcontractkit/testrig v0.0.4
 
 require (
 	charm.land/fang/v2 v2.0.1 // indirect

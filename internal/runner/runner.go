@@ -329,12 +329,7 @@ func setupDiagnoseLiveProgress(
 				return
 			case <-tick.C:
 				parallelProgress.withRenderLock(func() {
-					renderParallelDiagnoseProgressLine(
-						out.HumanStderrWriter(),
-						parallelProgress,
-						time.Now(),
-						true,
-					)
+					renderParallelDiagnoseProgressLine(out, parallelProgress, time.Now())
 				})
 			}
 		}
@@ -979,7 +974,12 @@ func startDiagnoseAnalyzingProgress(out *output.Printer, afterLiveProgress bool)
 		return func(error) {}
 	}
 	if afterLiveProgress {
-		_, _ = fmt.Fprint(out.HumanStderrWriter(), "\r\033[K\n")
+		if out.LiveInlineProgress() {
+			out.ClearInline()
+			_, _ = fmt.Fprint(out.HumanStderrWriter(), "\n")
+		} else {
+			_, _ = fmt.Fprint(out.HumanStderrWriter(), "\r\033[2K\n")
+		}
 	}
 
 	analyzeStart := time.Now()
@@ -987,7 +987,7 @@ func startDiagnoseAnalyzingProgress(out *output.Printer, afterLiveProgress bool)
 	finalize := func(live bool, err error) {
 		if err == nil {
 			if live {
-				_, _ = fmt.Fprint(out.HumanStderrWriter(), "\r\033[K")
+				out.ClearInline()
 			}
 			return
 		}
@@ -996,7 +996,8 @@ func startDiagnoseAnalyzingProgress(out *output.Printer, afterLiveProgress bool)
 			termstyle.Muted.Render("["+elapsed.String()+"]") + " " +
 			termstyle.Bad.Render("❌")
 		if live {
-			_, _ = fmt.Fprint(out.HumanStderrWriter(), "\r\033[K"+line+"\n")
+			out.ClearInline()
+			out.HumanStderr(line)
 			return
 		}
 		out.HumanStderr(line)
@@ -1011,7 +1012,7 @@ func startDiagnoseAnalyzingProgress(out *output.Printer, afterLiveProgress bool)
 	renderProgress := func() {
 		elapsed := max(time.Since(analyzeStart).Round(time.Second), 0)
 		line := termstyle.Label.Render("analyzing") + " " + termstyle.Muted.Render("["+elapsed.String()+"]")
-		_, _ = fmt.Fprint(out.HumanStderrWriter(), "\r\033[K"+line)
+		out.RedrawInline(line)
 	}
 	renderProgress()
 
@@ -1175,19 +1176,18 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 		out.HumanStderr(termstyle.Muted.Render(fmt.Sprintf("iteration %d/%d started", iter, iters)))
 	}
 
-	redraw := func(liveInline bool) {
+	redraw := func() {
 		if serialProgressMu != nil {
 			serialProgressMu.Lock()
 			defer serialProgressMu.Unlock()
 		}
 		renderDiagnoseProgressLine(
-			out.HumanStderrWriter(),
+			out,
 			iter,
 			iters,
 			time.Since(start),
 			diagnoseRunStart,
 			time.Now(),
-			liveInline,
 		)
 	}
 
@@ -1202,11 +1202,11 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 				case <-tickDone:
 					return
 				case <-tick.C:
-					redraw(true)
+					redraw()
 				}
 			}
 		})
-		redraw(true)
+		redraw()
 	}
 
 	retErr = cmd.Run()
