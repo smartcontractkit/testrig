@@ -19,9 +19,9 @@ func newDiagnoseCmd(runnerOpts hooks.RunOptions) *cobra.Command {
 
 Pass every flag and package pattern you want forwarded to go test after "--". The harness
 prepends "go test -json" (duplicate -json in your arguments is ignored) and adds "-count=1"
-when you omit -count or use -count=1. Prefer diagnose --iterations for repetition; you may
-use -count>1 to repeat inside one go test invocation. With --shuffle-seed, a per-iteration
--shuffle=<seed> is appended.`,
+per iteration. Do not pass -count in go test flags; use diagnose --iterations for repetition.
+Do not pass go test -trace; use diagnose --trace instead. With --shuffle-seed, a per-iteration
+-shuffle=<seed> is appended and recorded in report.json.`,
 		Example: "",
 		Args:    cobra.MinimumNArgs(1),
 		RunE: withGlobalHooks(runnerOpts, func(cmd *cobra.Command, args []string) (err error) {

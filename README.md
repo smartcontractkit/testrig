@@ -9,6 +9,8 @@ go install github.com/smartcontractkit/testrig/cmd/testrig@latest # Install
 testrig diagnose --iterations 5 -- ./... # Run your test suite 5 times and see detailed stats
 ```
 
+`diagnose` adds `-count=1` per iteration; use `--iterations` instead of passing `-count` after `--`. With `--trace`, results include `trace.json` for [Perfetto](https://ui.perfetto.dev); a browser opens only on an interactive terminal (set `TESTRIG_NO_BROWSER=1` in CI, or run `testrig trace` later).
+
 ### How Many `iterations` Do I Need?
 
 If you want to be sure that you have fixed a flaky test, or are chasing down a rare flake scenario, you'll need to re-run the test a bunch of times. The [math gets a little complicated](https://reliabilityanalyticstoolkit.appspot.com/sample_size) on exactly how many, so here's a simplified table to show you how confident you should be in your results.

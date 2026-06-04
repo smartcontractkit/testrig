@@ -248,7 +248,7 @@ func Diagnose(
 		PrintSummary(out.HumanStderrWriter(), report)
 	}
 	printDiagnoseArtifactsFooter(out, resultsDir, reportPath, csvPath, traceJSONPath)
-	if conf.Trace {
+	if conf.Trace && traceViewerEnabled() {
 		if err := ServeTrace(ctx, resultsDir, out, TraceServeOptions{}); err != nil {
 			out.Stderrf("serve trace: %v\n", err)
 			return err

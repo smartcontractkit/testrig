@@ -28,7 +28,7 @@ func TestTraceGeneration(t *testing.T) {
 `
 
 	// 2. Act: Parse using a new function or helper that handles tracing
-	events, err := parseTraceEvents(strings.NewReader(input), 0)
+	events, err := parseTraceEvents(strings.NewReader(input), 0, nil)
 	require.NoError(t, err)
 
 	// 3. Assert: Verify the trace events generated match expectations
@@ -112,7 +112,7 @@ func TestTraceGeneration_TableDriven(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			events, err := parseTraceEvents(strings.NewReader(tc.input), 0)
+			events, err := parseTraceEvents(strings.NewReader(tc.input), 0, nil)
 			require.NoError(t, err)
 			tc.expectedEvents(t, events)
 		})
@@ -256,7 +256,7 @@ func TestTraceGeneration_LargeLine(t *testing.T) {
 	largeOutput := strings.Repeat("A", 1024*1024)
 	input := `{"Time":"2026-06-03T12:00:00.000000Z","Action":"output","Package":"pkg1","Test":"TestA","Output":"` + largeOutput + `"}` + "\n"
 
-	events, err := parseTraceEvents(strings.NewReader(input), 0)
+	events, err := parseTraceEvents(strings.NewReader(input), 0, nil)
 	require.NoError(t, err)
 	for _, ev := range events {
 		assert.NotEqual(t, "X", ev.Ph, "Should not produce a duration event for output action")
@@ -288,6 +288,30 @@ func TestWriteTrace_InvalidIterationName(t *testing.T) {
 
 	err = WriteTrace(nil, tmpDir, &Report{})
 	require.NoError(t, err)
+}
+
+func TestParseTraceEvents_MalformedJSONL(t *testing.T) {
+	t.Parallel()
+
+	var stderr strings.Builder
+	out := output.NewForTest(false, io.Discard, &stderr, false)
+	input := "{not valid json}\n" +
+		`{"Time":"2026-06-03T12:00:00.000000Z","Action":"pass","Package":"pkg1","Elapsed":0.1}` + "\n"
+
+	events, err := parseTraceEvents(strings.NewReader(input), 2, out)
+	require.NoError(t, err)
+	assert.Contains(t, stderr.String(), "trace: skip malformed jsonl (iteration 2)")
+	assert.NotEmpty(t, events)
+}
+
+func TestTraceViewerEnabled(t *testing.T) {
+	t.Setenv("TESTRIG_NO_BROWSER", "1")
+	t.Setenv("CI", "")
+	assert.False(t, traceViewerEnabled())
+
+	t.Setenv("TESTRIG_NO_BROWSER", "")
+	t.Setenv("CI", "true")
+	assert.False(t, traceViewerEnabled())
 }
 
 func TestSafeStringArg(t *testing.T) {

@@ -13,7 +13,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/smartcontractkit/testrig/internal/output"
 )
@@ -39,8 +42,19 @@ type traceKey struct {
 	Test    string
 }
 
+// traceViewerEnabled reports whether diagnose should serve trace.json and open a browser.
+func traceViewerEnabled() bool {
+	if v := os.Getenv("TESTRIG_NO_BROWSER"); v != "" && v != "0" && !strings.EqualFold(v, "false") {
+		return false
+	}
+	if os.Getenv("CI") != "" {
+		return false
+	}
+	return term.IsTerminal(int(os.Stderr.Fd()))
+}
+
 // parseTraceEvents parses a go test -json stream for a single iteration and returns trace events.
-func parseTraceEvents(r io.Reader, iter int) ([]TraceEvent, error) {
+func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 	startTimes := make(map[traceKey]time.Time)
@@ -57,6 +71,9 @@ func parseTraceEvents(r io.Reader, iter int) ([]TraceEvent, error) {
 		}
 		var ev TestEvent
 		if err := json.Unmarshal(line, &ev); err != nil {
+			if out != nil {
+				out.Stderrf("trace: skip malformed jsonl (iteration %d): %v\n", iter, err)
+			}
 			continue
 		}
 		if ev.Time.IsZero() {
@@ -210,7 +227,7 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 		if err != nil {
 			return err
 		}
-		events, err := parseTraceEvents(f, iter)
+		events, err := parseTraceEvents(f, iter, out)
 		_ = f.Close()
 		if err != nil {
 			return err
