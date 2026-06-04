@@ -30,12 +30,13 @@ const timeoutPanic = "panic: test timed out"
 
 // TestEvent mirrors cmd/internal/test2json's TestEvent; only fields we need.
 type TestEvent struct {
-	Action      string  `json:"Action"`
-	Package     string  `json:"Package"`
-	Test        string  `json:"Test"`
-	Elapsed     float64 `json:"Elapsed"`
-	Output      string  `json:"Output"`
-	FailedBuild string  `json:"FailedBuild,omitempty"`
+	Time        time.Time `json:"Time"`
+	Action      string    `json:"Action"`
+	Package     string    `json:"Package"`
+	Test        string    `json:"Test"`
+	Elapsed     float64   `json:"Elapsed"`
+	Output      string    `json:"Output"`
+	FailedBuild string    `json:"FailedBuild,omitempty"`
 }
 
 // iterationScanMeta collects signals during scan that are not represented in aggregates only.

@@ -27,6 +27,7 @@ type App struct {
 	FailFast           bool
 	FailFastOn         []string
 	Shuffle            bool
+	Trace              bool
 	IterationSetup     string
 	IterationTeardown  string
 	shellHooks         map[string]string
@@ -112,6 +113,14 @@ var flagRegistry = map[string]flagBinder{
 			return err
 		}
 		conf.Shuffle = v
+		return nil
+	},
+	"trace": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetBool("trace")
+		if err != nil {
+			return err
+		}
+		conf.Trace = v
 		return nil
 	},
 }

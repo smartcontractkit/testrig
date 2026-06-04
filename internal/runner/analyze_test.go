@@ -1114,7 +1114,7 @@ func TestMarshalAIDiagnoseComplete_fromAnalyze(t *testing.T) {
 	), 30*time.Second)
 	require.NoError(t, err)
 
-	raw, err := marshalAIDiagnoseComplete("/tmp/results", "/tmp/results/report.json", rep)
+	raw, err := marshalAIDiagnoseComplete("/tmp/results", "/tmp/results/report.json", "/tmp/results/trace.json", rep)
 	require.NoError(t, err)
 
 	var ev aiDiagnoseComplete

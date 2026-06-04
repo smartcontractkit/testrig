@@ -2,6 +2,8 @@ package runner
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -18,6 +20,7 @@ type aiDiagnoseComplete struct {
 	Event    string         `json:"event"`
 	Report   string         `json:"report"`
 	Results  string         `json:"results"`
+	Trace    string         `json:"trace,omitempty"`
 	Summary  *ReportSummary `json:"summary"`
 	Findings aiFindings     `json:"findings"`
 }
@@ -37,11 +40,12 @@ type aiFinding struct {
 	MaxElapsed string `json:"max_elapsed,omitempty"`
 }
 
-func marshalAIDiagnoseComplete(resultsDir, reportPath string, rep *Report) ([]byte, error) {
+func marshalAIDiagnoseComplete(resultsDir, reportPath, tracePath string, rep *Report) ([]byte, error) {
 	ev := aiDiagnoseComplete{
 		Event:   "complete",
 		Report:  reportPath,
 		Results: resultsDir,
+		Trace:   tracePath,
 	}
 	if rep != nil {
 		ev.Summary = rep.Summary
@@ -95,7 +99,7 @@ func aiFindingFromSlowEntry(e TestEntry) aiFinding {
 	return f
 }
 
-func renderDiagnoseArtifactsTable(resultsDir, reportPath, csvPath string) string {
+func renderDiagnoseArtifactsTable(resultsDir, reportPath, csvPath, tracePath string) string {
 	tbl := table.New().
 		Border(lipgloss.RoundedBorder()).
 		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("240"))).
@@ -106,6 +110,17 @@ func renderDiagnoseArtifactsTable(resultsDir, reportPath, csvPath string) string
 	tbl.Row(termstyle.Muted.Render("report"), termstyle.Label.Render(reportPath))
 	if csvPath != "" {
 		tbl.Row(termstyle.Muted.Render("csv"), termstyle.Label.Render(csvPath))
+	}
+	if tracePath != "" {
+		binaryName := filepath.Base(os.Args[0])
+		displayPath := tracePath
+		if wd, err := os.Getwd(); err == nil {
+			if rel, err := filepath.Rel(wd, tracePath); err == nil {
+				displayPath = rel
+			}
+		}
+		val := fmt.Sprintf("run \"%s trace %s\"", binaryName, displayPath)
+		tbl.Row(termstyle.Muted.Render("trace"), termstyle.Label.Render(val))
 	}
 	return indentBlock(tbl.String(), "  ")
 }
@@ -120,11 +135,11 @@ func diagnoseArtifactsTableStyle(row, _ int) lipgloss.Style {
 	return lipgloss.NewStyle().Padding(0, 1)
 }
 
-func printDiagnoseArtifactsFooter(out *output.Printer, resultsDir, reportPath, csvPath string) {
+func printDiagnoseArtifactsFooter(out *output.Printer, resultsDir, reportPath, csvPath, tracePath string) {
 	if out == nil || out.AIOutput() {
 		return
 	}
-	rendered := renderDiagnoseArtifactsTable(resultsDir, reportPath, csvPath)
+	rendered := renderDiagnoseArtifactsTable(resultsDir, reportPath, csvPath, tracePath)
 	if rendered == "" {
 		return
 	}
