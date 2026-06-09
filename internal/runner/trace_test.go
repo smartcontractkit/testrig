@@ -124,9 +124,13 @@ func TestWriteTrace(t *testing.T) {
 
 	// Write simulated log files
 	log1 := `{"Time":"2026-06-03T12:00:00.000000Z","Action":"start","Package":"pkg1"}
+{"Time":"2026-06-03T12:00:00.100000Z","Action":"start","Package":"pkg1","Test":"TestA"}
+{"Time":"2026-06-03T12:00:00.300000Z","Action":"pass","Package":"pkg1","Test":"TestA","Elapsed":0.2}
 {"Time":"2026-06-03T12:00:00.300000Z","Action":"pass","Package":"pkg1","Elapsed":0.3}
 `
 	log2 := `{"Time":"2026-06-03T12:01:00.000000Z","Action":"start","Package":"pkg1"}
+{"Time":"2026-06-03T12:01:00.100000Z","Action":"start","Package":"pkg1","Test":"TestA"}
+{"Time":"2026-06-03T12:01:00.200000Z","Action":"pass","Package":"pkg1","Test":"TestA","Elapsed":0.1}
 {"Time":"2026-06-03T12:01:00.200000Z","Action":"pass","Package":"pkg1","Elapsed":0.2}
 `
 
@@ -310,7 +314,8 @@ func TestParseTraceEvents_MalformedJSONL(t *testing.T) {
 	var stderr strings.Builder
 	out := output.NewForTest(false, io.Discard, &stderr, false)
 	input := "{not valid json}\n" +
-		`{"Time":"2026-06-03T12:00:00.000000Z","Action":"pass","Package":"pkg1","Elapsed":0.1}` + "\n"
+		`{"Time":"2026-06-03T12:00:00.000000Z","Action":"start","Package":"pkg1","Test":"TestA"}` + "\n" +
+		`{"Time":"2026-06-03T12:00:00.100000Z","Action":"pass","Package":"pkg1","Test":"TestA","Elapsed":0.1}` + "\n"
 
 	events, err := parseTraceEvents(strings.NewReader(input), 2, out, make(map[string]int))
 	require.NoError(t, err)

@@ -170,9 +170,18 @@ func parseTraceEvents(
 		}
 	}
 
+	pkgHasRunTests := make(map[string]bool)
+	for _, ts := range states {
+		if ts.name != "" && ts.status != "skip" {
+			pkgHasRunTests[ts.pkg] = true
+		}
+	}
+
 	for pkg := range uniquePackages {
-		if _, ok := pkgIndexes[pkg]; !ok {
-			pkgIndexes[pkg] = len(pkgIndexes) + 1
+		if pkgHasRunTests[pkg] {
+			if _, ok := pkgIndexes[pkg]; !ok {
+				pkgIndexes[pkg] = len(pkgIndexes) + 1
+			}
 		}
 	}
 
@@ -227,7 +236,10 @@ func parseTraceEvents(
 	}
 
 	for _, ts := range allTests {
-		pid := pkgIndexes[ts.pkg]
+		pid, ok := pkgIndexes[ts.pkg]
+		if !ok {
+			continue
+		}
 		cname := "terrible"
 		if !ts.incomplete {
 			switch ts.status {
@@ -331,7 +343,10 @@ func parseTraceEvents(
 
 	// Append metadata events for thread names and process names
 	for pkg := range uniquePackages {
-		pid := pkgIndexes[pkg]
+		pid, ok := pkgIndexes[pkg]
+		if !ok {
+			continue
+		}
 
 		events = append(events, TraceEvent{
 			Name: "process_name",
