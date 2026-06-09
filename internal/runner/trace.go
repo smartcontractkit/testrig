@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -27,19 +28,103 @@ const traceListenAddr = "127.0.0.1:9001"
 
 // TraceEvent represents a single event in Chrome's Trace Event Format.
 type TraceEvent struct {
-	Name string         `json:"name"`
-	Cat  string         `json:"cat"`
-	Ph   string         `json:"ph"`  // "X" for Complete event, "M" for Metadata
-	Ts   int64          `json:"ts"`  // Microseconds
-	Dur  int64          `json:"dur"` // Microseconds
-	Pid  int            `json:"pid"`
-	Tid  int            `json:"tid"`
-	Args map[string]any `json:"args,omitempty"`
+	Name  string         `json:"name"`
+	Cat   string         `json:"cat"`
+	Ph    string         `json:"ph"`            // X complete, b/e nestable async, M metadata
+	Ts    int64          `json:"ts"`            // Microseconds
+	Dur   int64          `json:"dur,omitempty"` // Microseconds (X only)
+	Pid   int            `json:"pid"`
+	Tid   int            `json:"tid"`
+	ID    string         `json:"id,omitempty"`    // Nestable async slice id (tests)
+	Cname string         `json:"cname,omitempty"` // Perfetto slice color
+	Args  map[string]any `json:"args,omitempty"`
 }
 
 type traceKey struct {
 	Package string
 	Test    string
+}
+
+// pkgTraceStats summarizes per-package outcomes to decide trace inclusion.
+type pkgTraceStats struct {
+	packageFail bool
+	passOrFail  bool // at least one test passed or failed
+	incomplete  bool
+	testEnds    int
+	skipEnds    int
+}
+
+func statsFor(m map[string]*pkgTraceStats, pkg string) *pkgTraceStats {
+	if s, ok := m[pkg]; ok {
+		return s
+	}
+	s := &pkgTraceStats{}
+	m[pkg] = s
+	return s
+}
+
+func (s *pkgTraceStats) recordTestEnd(action string, incomplete bool) {
+	s.testEnds++
+	if incomplete {
+		s.incomplete = true
+		return
+	}
+	switch action {
+	case "pass", "fail":
+		s.passOrFail = true
+	case "skip":
+		s.skipEnds++
+	}
+}
+
+// omitPackageFromTrace reports whether a package should be dropped from the trace.
+// Packages with no tests run, or where every test was skipped, are omitted unless
+// they failed at package scope or had an incomplete (e.g. timeout) test.
+func omitPackageFromTrace(s *pkgTraceStats) bool {
+	if s.packageFail || s.passOrFail || s.incomplete {
+		return false
+	}
+	if s.testEnds == 0 {
+		return true
+	}
+	return s.testEnds == s.skipEnds
+}
+
+func omittedPackages(pkgStats map[string]*pkgTraceStats) map[string]bool {
+	omitted := make(map[string]bool, len(pkgStats))
+	for pkg, st := range pkgStats {
+		if omitPackageFromTrace(st) {
+			omitted[pkg] = true
+		}
+	}
+	return omitted
+}
+
+func filterTraceEventsByPackage(events []TraceEvent, omitted map[string]bool) []TraceEvent {
+	if len(omitted) == 0 {
+		return events
+	}
+	filtered := events[:0]
+	for _, ev := range events {
+		pkg := safeStringArg(ev.Args, "package")
+		if pkg != "" && omitted[pkg] {
+			continue
+		}
+		filtered = append(filtered, ev)
+	}
+	return filtered
+}
+
+func includedPackages(pkgStats map[string]*pkgTraceStats, omitted map[string]bool) []string {
+	var pkgs []string
+	for pkg := range pkgStats {
+		if omitted[pkg] {
+			continue
+		}
+		pkgs = append(pkgs, pkg)
+	}
+	sort.Strings(pkgs)
+	return pkgs
 }
 
 // traceViewerEnabled reports whether diagnose should serve trace.json and open a browser.
@@ -53,16 +138,96 @@ func traceViewerEnabled() bool {
 	return term.IsTerminal(int(os.Stderr.Fd()))
 }
 
+// traceActionCname maps go test outcomes to Chrome trace color names for Perfetto.
+func traceActionCname(action string, incomplete bool) string {
+	if incomplete {
+		return "rail_response"
+	}
+	switch action {
+	case "pass":
+		return "good"
+	case "fail":
+		return "bad"
+	case "skip":
+		return "grey"
+	default:
+		return ""
+	}
+}
+
 // parseTraceEvents parses a go test -json stream for a single iteration and returns trace events.
+// Each package is one Perfetto track. Package duration uses X events; tests use nestable async
+// b/e slices on the same track so parallel tests do not produce overlapping X events.
 func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 	startTimes := make(map[traceKey]time.Time)
+	asyncIDs := make(map[traceKey]string)
 	var events []TraceEvent
 	var lastSeenTime time.Time
-	uniqueKeys := make(map[traceKey]bool)
+	pkgStats := make(map[string]*pkgTraceStats)
 
 	pid := iter + 1
+	var nextAsyncID uint64
+
+	allocAsyncID := func() string {
+		nextAsyncID++
+		return fmt.Sprintf("0x%x", nextAsyncID)
+	}
+
+	appendTestBegin := func(key traceKey, name, pkg string, ts time.Time) string {
+		id := allocAsyncID()
+		asyncIDs[key] = id
+		events = append(events, TraceEvent{
+			Name: name,
+			Cat:  "test",
+			Ph:   "b",
+			Ts:   ts.UnixMicro(),
+			Pid:  pid,
+			ID:   id,
+			Args: map[string]any{
+				"package": pkg,
+			},
+		})
+		return id
+	}
+
+	appendTestEnd := func(
+		key traceKey,
+		name, pkg, action string,
+		start, end time.Time,
+		incomplete bool,
+		extraArgs map[string]any,
+	) {
+		id, ok := asyncIDs[key]
+		if !ok {
+			id = appendTestBegin(key, name, pkg, start)
+		}
+		delete(asyncIDs, key)
+		delete(startTimes, key)
+
+		args := map[string]any{"package": pkg}
+		if action != "" {
+			args["action"] = action
+		}
+		if incomplete {
+			args["incomplete"] = true
+		}
+		maps.Copy(args, extraArgs)
+
+		statsFor(pkgStats, pkg).recordTestEnd(action, incomplete)
+
+		events = append(events, TraceEvent{
+			Name:  name,
+			Cat:   "test",
+			Ph:    "e",
+			Ts:    end.UnixMicro(),
+			Pid:   pid,
+			ID:    id,
+			Cname: traceActionCname(action, incomplete),
+			Args:  args,
+		})
+	}
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -91,43 +256,40 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 		case "run":
 			if ev.Test != "" {
 				startTimes[key] = ev.Time
+				appendTestBegin(key, ev.Test, ev.Package, ev.Time)
 			}
 		case "pass", "fail", "skip":
 			start, ok := startTimes[key]
 			if !ok {
-				// Fallback to estimating start time using Elapsed.
 				start = ev.Time.Add(-time.Duration(ev.Elapsed * float64(time.Second)))
-			} else {
-				delete(startTimes, key)
+			}
+
+			if ev.Test != "" {
+				extra := map[string]any{"elapsed": ev.Elapsed}
+				appendTestEnd(key, ev.Test, ev.Package, ev.Action, start, ev.Time, false, extra)
+				continue
+			}
+
+			delete(startTimes, key)
+
+			st := statsFor(pkgStats, ev.Package)
+			if ev.Action == "fail" {
+				st.packageFail = true
 			}
 
 			dur := max(ev.Time.Sub(start).Microseconds(), 0)
-			// If dur is calculated as 0 but Elapsed is > 0, fallback to Elapsed.
 			if dur == 0 && ev.Elapsed > 0 {
 				dur = int64(ev.Elapsed * 1e6)
 			}
 
-			name := ev.Test
-			cat := "test"
-			if ev.Test == "" {
-				name = ev.Package
-				cat = "package"
-			}
-
-			traceK := traceKey{Package: ev.Package}
-			if ev.Test != "" {
-				traceK.Test = ev.Test
-			}
-			uniqueKeys[traceK] = true
-
 			events = append(events, TraceEvent{
-				Name: name,
-				Cat:  cat,
-				Ph:   "X",
-				Ts:   start.UnixMicro(),
-				Dur:  dur,
-				Pid:  pid,
-				// Tid will be populated later after trace keys are sorted.
+				Name:  ev.Package,
+				Cat:   "package",
+				Ph:    "X",
+				Ts:    start.UnixMicro(),
+				Dur:   dur,
+				Pid:   pid,
+				Cname: traceActionCname(ev.Action, false),
 				Args: map[string]any{
 					"package": ev.Package,
 					"action":  ev.Action,
@@ -141,25 +303,25 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 		return nil, err
 	}
 
-	// Handle incomplete/timed out tests/packages
 	if !lastSeenTime.IsZero() {
 		for key, start := range startTimes {
-			dur := max(lastSeenTime.Sub(start).Microseconds(), 0)
-			name := key.Test
-			cat := "test"
-			if key.Test == "" {
-				name = key.Package
-				cat = "package"
+			if key.Test != "" {
+				appendTestEnd(key, key.Test, key.Package, "", start, lastSeenTime, true, nil)
+				continue
 			}
-			uniqueKeys[key] = true
 
+			st := statsFor(pkgStats, key.Package)
+			st.incomplete = true
+
+			dur := max(lastSeenTime.Sub(start).Microseconds(), 0)
 			events = append(events, TraceEvent{
-				Name: name,
-				Cat:  cat,
-				Ph:   "X",
-				Ts:   start.UnixMicro(),
-				Dur:  dur,
-				Pid:  pid,
+				Name:  key.Package,
+				Cat:   "package",
+				Ph:    "X",
+				Ts:    start.UnixMicro(),
+				Dur:   dur,
+				Pid:   pid,
+				Cname: traceActionCname("", true),
 				Args: map[string]any{
 					"package":    key.Package,
 					"incomplete": true,
@@ -168,46 +330,31 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 		}
 	}
 
-	// Alphabetize unique package/test keys to give them consistent thread IDs.
-	var keys []traceKey
-	for k := range uniqueKeys {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].Package != keys[j].Package {
-			return keys[i].Package < keys[j].Package
-		}
-		return keys[i].Test < keys[j].Test
-	})
+	omitted := omittedPackages(pkgStats)
+	events = filterTraceEventsByPackage(events, omitted)
+	pkgs := includedPackages(pkgStats, omitted)
 
-	keyTids := make(map[traceKey]int, len(keys))
-	for i, k := range keys {
-		keyTids[k] = i + 1
+	pkgTids := make(map[string]int, len(pkgs))
+	for i, pkg := range pkgs {
+		pkgTids[pkg] = i + 1
 	}
 
-	// Map tids to events.
 	for i := range events {
-		pkg := safeStringArg(events[i].Args, "package")
-		test := ""
-		if events[i].Cat == "test" {
-			test = events[i].Name
+		if events[i].Ph == "M" {
+			continue
 		}
-		events[i].Tid = keyTids[traceKey{Package: pkg, Test: test}]
+		pkg := safeStringArg(events[i].Args, "package")
+		events[i].Tid = pkgTids[pkg]
 	}
 
-	// Append metadata events for thread names.
-	for k, tid := range keyTids {
-		threadName := k.Package
-		if k.Test != "" {
-			threadName = k.Package + " :: " + k.Test
-		}
+	for pkg, tid := range pkgTids {
 		events = append(events, TraceEvent{
 			Name: "thread_name",
 			Ph:   "M",
 			Pid:  pid,
 			Tid:  tid,
 			Args: map[string]any{
-				"name": threadName,
+				"name": pkg,
 			},
 		})
 		events = append(events, TraceEvent{
@@ -252,7 +399,6 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 		}
 
 		pid := iter + 1
-		// Add process name metadata event
 		procName := fmt.Sprintf("Iteration %d", iter+1)
 		if rep != nil && iter < len(rep.IterationSummaries) {
 			s := rep.IterationSummaries[iter]
@@ -281,10 +427,9 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 		allEvents = append(allEvents, events...)
 	}
 
-	// Warn if no duration events were parsed
 	hasDurationEvents := false
 	for _, ev := range allEvents {
-		if ev.Ph == "X" {
+		if ev.Ph == "X" || ev.Ph == "e" {
 			hasDurationEvents = true
 			break
 		}
@@ -293,7 +438,6 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 		out.Stderrf("warning: no test execution events recorded in trace\n")
 	}
 
-	// Write trace.json
 	b, err := json.MarshalIndent(allEvents, "", "  ")
 	if err != nil {
 		return err
@@ -359,7 +503,6 @@ func ServeTrace(
 		}
 		http.ServeFile(w, r, tracePath)
 
-		// Auto-exit after serving
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			srvCancel()
@@ -393,7 +536,6 @@ func ServeTrace(
 
 	<-srvCtx.Done()
 
-	// Graceful shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)

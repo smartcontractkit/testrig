@@ -21,7 +21,7 @@ import (
 func TestTraceGeneration_NoOverlappingSlicesPerTrack(t *testing.T) {
 	t.Parallel()
 
-	// Package and tests share one package track today; parallel subtests overlap too.
+	// Parallel tests share one package track via nestable async slices, not X events.
 	input := `{"Time":"2026-06-03T12:00:00.000000Z","Action":"start","Package":"pkg1"}
 {"Time":"2026-06-03T12:00:00.100000Z","Action":"run","Package":"pkg1","Test":"TestA"}
 {"Time":"2026-06-03T12:00:00.150000Z","Action":"run","Package":"pkg1","Test":"TestB"}
@@ -33,6 +33,105 @@ func TestTraceGeneration_NoOverlappingSlicesPerTrack(t *testing.T) {
 	events, err := parseTraceEvents(strings.NewReader(input), 0, nil)
 	require.NoError(t, err)
 	assertNoOverlappingTraceSlices(t, events)
+	assertOneTrackPerPackage(t, events)
+}
+
+func TestTraceGeneration_OmitsSkippedAndEmptyPackages(t *testing.T) {
+	t.Parallel()
+
+	input := `{"Time":"2026-06-03T12:00:00.000000Z","Action":"skip","Package":"skipped_only"}
+{"Time":"2026-06-03T12:00:00.010000Z","Action":"start","Package":"empty_pkg"}
+{"Time":"2026-06-03T12:00:00.020000Z","Action":"pass","Package":"empty_pkg","Elapsed":0.01}
+{"Time":"2026-06-03T12:00:00.030000Z","Action":"start","Package":"all_skip"}
+{"Time":"2026-06-03T12:00:00.040000Z","Action":"run","Package":"all_skip","Test":"TestA"}
+{"Time":"2026-06-03T12:00:00.050000Z","Action":"skip","Package":"all_skip","Test":"TestA","Elapsed":0.01}
+{"Time":"2026-06-03T12:00:00.060000Z","Action":"pass","Package":"all_skip","Elapsed":0.03}
+{"Time":"2026-06-03T12:00:00.070000Z","Action":"start","Package":"mixed"}
+{"Time":"2026-06-03T12:00:00.080000Z","Action":"run","Package":"mixed","Test":"TestSkip"}
+{"Time":"2026-06-03T12:00:00.090000Z","Action":"skip","Package":"mixed","Test":"TestSkip","Elapsed":0.01}
+{"Time":"2026-06-03T12:00:00.100000Z","Action":"run","Package":"mixed","Test":"TestPass"}
+{"Time":"2026-06-03T12:00:00.110000Z","Action":"pass","Package":"mixed","Test":"TestPass","Elapsed":0.01}
+{"Time":"2026-06-03T12:00:00.120000Z","Action":"pass","Package":"mixed","Elapsed":0.05}
+`
+
+	events, err := parseTraceEvents(strings.NewReader(input), 0, nil)
+	require.NoError(t, err)
+
+	packages := map[string]bool{}
+	for _, ev := range events {
+		if ev.Ph == "M" {
+			continue
+		}
+		if pkg := safeStringArg(ev.Args, "package"); pkg != "" {
+			packages[pkg] = true
+		}
+	}
+
+	assert.False(t, packages["skipped_only"])
+	assert.False(t, packages["empty_pkg"])
+	assert.False(t, packages["all_skip"])
+	assert.True(t, packages["mixed"])
+}
+
+func TestOmitPackageFromTrace(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, omitPackageFromTrace(&pkgTraceStats{}))
+	assert.True(t, omitPackageFromTrace(&pkgTraceStats{testEnds: 2, skipEnds: 2}))
+	assert.False(t, omitPackageFromTrace(&pkgTraceStats{packageFail: true}))
+	assert.False(t, omitPackageFromTrace(&pkgTraceStats{passOrFail: true}))
+	assert.False(t, omitPackageFromTrace(&pkgTraceStats{incomplete: true}))
+	assert.False(t, omitPackageFromTrace(&pkgTraceStats{testEnds: 2, skipEnds: 1, passOrFail: true}))
+}
+
+func TestTraceGeneration_OutcomeColors(t *testing.T) {
+	t.Parallel()
+
+	input := `{"Time":"2026-06-03T12:00:00.000000Z","Action":"start","Package":"pkg1"}
+{"Time":"2026-06-03T12:00:00.100000Z","Action":"run","Package":"pkg1","Test":"TestPass"}
+{"Time":"2026-06-03T12:00:00.200000Z","Action":"pass","Package":"pkg1","Test":"TestPass","Elapsed":0.1}
+{"Time":"2026-06-03T12:00:00.300000Z","Action":"run","Package":"pkg1","Test":"TestFail"}
+{"Time":"2026-06-03T12:00:00.400000Z","Action":"fail","Package":"pkg1","Test":"TestFail","Elapsed":0.1}
+{"Time":"2026-06-03T12:00:00.500000Z","Action":"run","Package":"pkg1","Test":"TestSkip"}
+{"Time":"2026-06-03T12:00:00.600000Z","Action":"skip","Package":"pkg1","Test":"TestSkip","Elapsed":0.1}
+{"Time":"2026-06-03T12:00:00.700000Z","Action":"pass","Package":"pkg1","Elapsed":0.7}
+`
+
+	events, err := parseTraceEvents(strings.NewReader(input), 0, nil)
+	require.NoError(t, err)
+
+	cnames := map[string]string{}
+	for _, ev := range events {
+		if ev.Cname == "" {
+			continue
+		}
+		cnames[ev.Name] = ev.Cname
+	}
+
+	assert.Equal(t, "good", cnames["TestPass"])
+	assert.Equal(t, "bad", cnames["TestFail"])
+	assert.Equal(t, "grey", cnames["TestSkip"])
+	assert.Equal(t, "good", cnames["pkg1"])
+}
+
+func assertOneTrackPerPackage(t *testing.T, events []TraceEvent) {
+	t.Helper()
+
+	pkgTids := map[string]int{}
+	for _, ev := range events {
+		if ev.Ph == "M" {
+			continue
+		}
+		pkg := safeStringArg(ev.Args, "package")
+		if pkg == "" {
+			continue
+		}
+		if tid, ok := pkgTids[pkg]; ok {
+			assert.Equal(t, tid, ev.Tid, "package %q should use one track", pkg)
+			continue
+		}
+		pkgTids[pkg] = ev.Tid
+	}
 }
 
 func assertNoOverlappingTraceSlices(t *testing.T, events []TraceEvent) {
@@ -83,29 +182,34 @@ func TestTraceGeneration(t *testing.T) {
 	// 3. Assert: Verify the trace events generated match expectations
 	assert.NotEmpty(t, events)
 
-	var pkgEvent, testEvent *TraceEvent
+	var pkgEvent *TraceEvent
+	var testBegin, testEnd *TraceEvent
 	for i := range events {
 		ev := &events[i]
-		if ev.Ph == "X" {
-			switch ev.Name {
-			case "pkg1":
-				pkgEvent = ev
-			case "TestA":
-				testEvent = ev
-			}
+		switch {
+		case ev.Name == "pkg1" && ev.Ph == "X":
+			pkgEvent = ev
+		case ev.Name == "TestA" && ev.Ph == "b":
+			testBegin = ev
+		case ev.Name == "TestA" && ev.Ph == "e":
+			testEnd = ev
 		}
 	}
 
 	require.NotNil(t, pkgEvent, "should have pkg1 trace event")
-	require.NotNil(t, testEvent, "should have TestA trace event")
+	require.NotNil(t, testBegin, "should have TestA async begin")
+	require.NotNil(t, testEnd, "should have TestA async end")
 
 	// Timestamps are in microseconds.
 	// pkg1 started at 12:00:00.000000Z, ended at 12:00:00.300000Z -> 300,000 microseconds
 	// TestA started at 12:00:00.100000Z, ended at 12:00:00.200000Z -> 100,000 microseconds
 	assert.Equal(t, int64(300000), pkgEvent.Dur)
-	assert.Equal(t, int64(100000), testEvent.Dur)
+	assert.Equal(t, int64(100000), testEnd.Ts-testBegin.Ts)
+	assert.Equal(t, "good", pkgEvent.Cname)
+	assert.Equal(t, "good", testEnd.Cname)
+	assert.Equal(t, testBegin.Tid, pkgEvent.Tid, "package and tests share one track")
 
-	assert.Greater(t, testEvent.Ts, pkgEvent.Ts, "Test should start after package")
+	assert.Greater(t, testBegin.Ts, pkgEvent.Ts, "Test should start after package")
 }
 
 func TestTraceGeneration_TableDriven(t *testing.T) {
@@ -122,38 +226,46 @@ func TestTraceGeneration_TableDriven(t *testing.T) {
 {"Time":"2026-06-03T12:00:00.100000Z","Action":"run","Package":"pkg1","Test":"TestA"}
 `,
 			expectedEvents: func(t *testing.T, events []TraceEvent) {
-				var pkgEvent, testEvent *TraceEvent
+				var pkgEvent *TraceEvent
+				var testBegin, testEnd *TraceEvent
 				for i := range events {
 					ev := &events[i]
-					if ev.Ph == "X" {
-						switch ev.Name {
-						case "pkg1":
-							pkgEvent = ev
-						case "TestA":
-							testEvent = ev
-						}
+					switch {
+					case ev.Name == "pkg1" && ev.Ph == "X":
+						pkgEvent = ev
+					case ev.Name == "TestA" && ev.Ph == "b":
+						testBegin = ev
+					case ev.Name == "TestA" && ev.Ph == "e":
+						testEnd = ev
 					}
 				}
 				require.NotNil(t, pkgEvent)
-				require.NotNil(t, testEvent)
+				require.NotNil(t, testBegin)
+				require.NotNil(t, testEnd)
 				// They both ended at last seen time (12:00:00.100000Z)
 				assert.Equal(t, int64(100000), pkgEvent.Dur)
-				assert.Equal(t, int64(0), testEvent.Dur)
+				assert.Equal(t, int64(0), testEnd.Ts-testBegin.Ts)
+				assert.Equal(t, "rail_response", pkgEvent.Cname)
+				assert.Equal(t, "rail_response", testEnd.Cname)
 			},
 		},
 		{
 			name:  "missing start event (using elapsed fallback)",
 			input: `{"Time":"2026-06-03T12:00:00.200000Z","Action":"pass","Package":"pkg1","Test":"TestA","Elapsed":0.15}`,
 			expectedEvents: func(t *testing.T, events []TraceEvent) {
-				var testEvent *TraceEvent
+				var testBegin, testEnd *TraceEvent
 				for i := range events {
 					ev := &events[i]
-					if ev.Ph == "X" && ev.Name == "TestA" {
-						testEvent = ev
+					switch {
+					case ev.Name == "TestA" && ev.Ph == "b":
+						testBegin = ev
+					case ev.Name == "TestA" && ev.Ph == "e":
+						testEnd = ev
 					}
 				}
-				require.NotNil(t, testEvent)
-				assert.Equal(t, int64(150000), testEvent.Dur)
+				require.NotNil(t, testBegin)
+				require.NotNil(t, testEnd)
+				assert.Equal(t, int64(150000), testEnd.Ts-testBegin.Ts)
 			},
 		},
 	}
@@ -175,9 +287,13 @@ func TestWriteTrace(t *testing.T) {
 
 	// Write simulated log files
 	log1 := `{"Time":"2026-06-03T12:00:00.000000Z","Action":"start","Package":"pkg1"}
+{"Time":"2026-06-03T12:00:00.100000Z","Action":"run","Package":"pkg1","Test":"TestA"}
+{"Time":"2026-06-03T12:00:00.200000Z","Action":"pass","Package":"pkg1","Test":"TestA","Elapsed":0.1}
 {"Time":"2026-06-03T12:00:00.300000Z","Action":"pass","Package":"pkg1","Elapsed":0.3}
 `
 	log2 := `{"Time":"2026-06-03T12:01:00.000000Z","Action":"start","Package":"pkg1"}
+{"Time":"2026-06-03T12:01:00.050000Z","Action":"run","Package":"pkg1","Test":"TestA"}
+{"Time":"2026-06-03T12:01:00.150000Z","Action":"pass","Package":"pkg1","Test":"TestA","Elapsed":0.1}
 {"Time":"2026-06-03T12:01:00.200000Z","Action":"pass","Package":"pkg1","Elapsed":0.2}
 `
 
@@ -345,7 +461,8 @@ func TestParseTraceEvents_MalformedJSONL(t *testing.T) {
 	var stderr strings.Builder
 	out := output.NewForTest(false, io.Discard, &stderr, false)
 	input := "{not valid json}\n" +
-		`{"Time":"2026-06-03T12:00:00.000000Z","Action":"pass","Package":"pkg1","Elapsed":0.1}` + "\n"
+		`{"Time":"2026-06-03T12:00:00.000000Z","Action":"run","Package":"pkg1","Test":"TestA"}` + "\n" +
+		`{"Time":"2026-06-03T12:00:00.100000Z","Action":"pass","Package":"pkg1","Test":"TestA","Elapsed":0.1}` + "\n"
 
 	events, err := parseTraceEvents(strings.NewReader(input), 2, out)
 	require.NoError(t, err)
@@ -361,6 +478,15 @@ func TestTraceViewerEnabled(t *testing.T) {
 	t.Setenv("TESTRIG_NO_BROWSER", "")
 	t.Setenv("CI", "true")
 	assert.False(t, traceViewerEnabled())
+}
+
+func TestTraceActionCname(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "good", traceActionCname("pass", false))
+	assert.Equal(t, "bad", traceActionCname("fail", false))
+	assert.Equal(t, "grey", traceActionCname("skip", false))
+	assert.Equal(t, "rail_response", traceActionCname("pass", true))
 }
 
 func TestSafeStringArg(t *testing.T) {
