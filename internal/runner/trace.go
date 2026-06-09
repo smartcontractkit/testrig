@@ -177,14 +177,6 @@ func parseTraceEvents(
 		}
 	}
 
-	for pkg := range uniquePackages {
-		if pkgHasRunTests[pkg] {
-			if _, ok := pkgIndexes[pkg]; !ok {
-				pkgIndexes[pkg] = len(pkgIndexes) + 1
-			}
-		}
-	}
-
 	var events []TraceEvent
 
 	// We need to sort tests by runTime/contTime to allocate threads properly
@@ -196,6 +188,30 @@ func parseTraceEvents(
 			// missing start event fallback
 			ts.runTime = ts.endTime.Add(-time.Duration(ts.elapsed * float64(time.Second)))
 			allTests = append(allTests, ts)
+		}
+	}
+
+	pkgEarliestRun := make(map[string]time.Time)
+	for _, ts := range allTests {
+		current, ok := pkgEarliestRun[ts.pkg]
+		if !ok || ts.runTime.Before(current) {
+			pkgEarliestRun[ts.pkg] = ts.runTime
+		}
+	}
+
+	var orderedPkgs []string
+	for pkg := range uniquePackages {
+		if pkgHasRunTests[pkg] {
+			orderedPkgs = append(orderedPkgs, pkg)
+		}
+	}
+	sort.Slice(orderedPkgs, func(i, j int) bool {
+		return pkgEarliestRun[orderedPkgs[i]].Before(pkgEarliestRun[orderedPkgs[j]])
+	})
+
+	for _, pkg := range orderedPkgs {
+		if _, ok := pkgIndexes[pkg]; !ok {
+			pkgIndexes[pkg] = len(pkgIndexes) + 1
 		}
 	}
 
