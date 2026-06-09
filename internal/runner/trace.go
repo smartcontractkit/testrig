@@ -27,14 +27,15 @@ const traceListenAddr = "127.0.0.1:9001"
 
 // TraceEvent represents a single event in Chrome's Trace Event Format.
 type TraceEvent struct {
-	Name string         `json:"name"`
-	Cat  string         `json:"cat"`
-	Ph   string         `json:"ph"`  // "X" for Complete event, "M" for Metadata
-	Ts   int64          `json:"ts"`  // Microseconds
-	Dur  int64          `json:"dur"` // Microseconds
-	Pid  int            `json:"pid"`
-	Tid  int            `json:"tid"`
-	Args map[string]any `json:"args,omitempty"`
+	Name  string         `json:"name"`
+	Cat   string         `json:"cat"`
+	Ph    string         `json:"ph"`  // "X" for Complete event, "M" for Metadata
+	Ts    int64          `json:"ts"`  // Microseconds
+	Dur   int64          `json:"dur"` // Microseconds
+	Pid   int            `json:"pid"`
+	Tid   int            `json:"tid"`
+	Cname string         `json:"cname,omitempty"`
+	Args  map[string]any `json:"args,omitempty"`
 }
 
 type traceKey struct {
@@ -53,16 +54,57 @@ func traceViewerEnabled() bool {
 	return term.IsTerminal(int(os.Stderr.Fd()))
 }
 
+const maxOutputSize = 8 * 1024 // 8 KB
+
+type testState struct {
+	pkg        string
+	name       string
+	runTime    time.Time
+	pauseTime  time.Time
+	contTime   time.Time
+	endTime    time.Time
+	status     string
+	output     []byte
+	truncated  bool
+	isParallel bool
+	incomplete bool
+	elapsed    float64
+}
+
+func (ts *testState) addOutput(s string) {
+	ts.output = append(ts.output, s...)
+	if len(ts.output) > maxOutputSize {
+		ts.output = ts.output[len(ts.output)-maxOutputSize:]
+		ts.truncated = true
+	}
+}
+
+func (ts *testState) getOutput() string {
+	if ts.truncated {
+		return "\n... (truncated)\n" + string(ts.output)
+	}
+	return string(ts.output)
+}
+
 // parseTraceEvents parses a go test -json stream for a single iteration and returns trace events.
-func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent, error) {
+//
+//nolint:gocyclo // Parses a complex JSON stream and allocates threads.
+func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Printer) ([]TraceEvent, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
-	startTimes := make(map[traceKey]time.Time)
-	var events []TraceEvent
+
+	states := make(map[traceKey]*testState)
+	getState := func(key traceKey) *testState {
+		s, ok := states[key]
+		if !ok {
+			s = &testState{pkg: key.Package, name: key.Test}
+			states[key] = s
+		}
+		return s
+	}
+
 	var lastSeenTime time.Time
 	uniquePackages := make(map[string]bool)
-
-	pid := iter + 1
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -85,52 +127,28 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 		}
 
 		key := traceKey{Package: ev.Package, Test: ev.Test}
+		ts := getState(key)
 
 		switch ev.Action {
 		case "start":
-			if ev.Test == "" {
-				startTimes[key] = ev.Time
+			if ts.name == "" && ts.runTime.IsZero() {
+				ts.runTime = ev.Time
 			}
 		case "run":
-			if ev.Test != "" {
-				startTimes[key] = ev.Time
+			if ts.name != "" && ts.runTime.IsZero() {
+				ts.runTime = ev.Time
 			}
+		case "pause":
+			ts.pauseTime = ev.Time
+			ts.isParallel = true
+		case "cont":
+			ts.contTime = ev.Time
+		case "output":
+			ts.addOutput(ev.Output)
 		case "pass", "fail", "skip":
-			start, ok := startTimes[key]
-			if !ok {
-				// Fallback to estimating start time using Elapsed.
-				start = ev.Time.Add(-time.Duration(ev.Elapsed * float64(time.Second)))
-			} else {
-				delete(startTimes, key)
-			}
-
-			dur := max(ev.Time.Sub(start).Microseconds(), 0)
-			// If dur is calculated as 0 but Elapsed is > 0, fallback to Elapsed.
-			if dur == 0 && ev.Elapsed > 0 {
-				dur = int64(ev.Elapsed * 1e6)
-			}
-
-			name := ev.Test
-			cat := "test"
-			if ev.Test == "" {
-				name = ev.Package
-				cat = "package"
-			}
-
-			events = append(events, TraceEvent{
-				Name: name,
-				Cat:  cat,
-				Ph:   "X",
-				Ts:   start.UnixMicro(),
-				Dur:  dur,
-				Pid:  pid,
-				// Tid will be populated later after packages are sorted.
-				Args: map[string]any{
-					"package": ev.Package,
-					"action":  ev.Action,
-					"elapsed": ev.Elapsed,
-				},
-			})
+			ts.endTime = ev.Time
+			ts.status = ev.Action
+			ts.elapsed = ev.Elapsed
 		}
 	}
 
@@ -138,69 +156,221 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 		return nil, err
 	}
 
-	// Handle incomplete/timed out tests/packages
-	if !lastSeenTime.IsZero() {
-		for key, start := range startTimes {
-			dur := max(lastSeenTime.Sub(start).Microseconds(), 0)
-			name := key.Test
-			cat := "test"
-			if key.Test == "" {
-				name = key.Package
-				cat = "package"
-			}
-			events = append(events, TraceEvent{
-				Name: name,
-				Cat:  cat,
-				Ph:   "X",
-				Ts:   start.UnixMicro(),
-				Dur:  dur,
-				Pid:  pid,
-				Args: map[string]any{
-					"package":    key.Package,
-					"incomplete": true,
-				},
-			})
+	// Handle incomplete
+	for _, ts := range states {
+		if ts.endTime.IsZero() && !ts.runTime.IsZero() && !lastSeenTime.IsZero() {
+			ts.endTime = lastSeenTime
+			ts.incomplete = true
 		}
 	}
 
-	// Alphabetize unique packages to give them consistent thread IDs
+	// Alphabetize unique packages to give them consistent PIDs
 	var pkgs []string
 	for pkg := range uniquePackages {
 		pkgs = append(pkgs, pkg)
 	}
 	sort.Strings(pkgs)
 
-	pkgTids := make(map[string]int)
+	pkgPids := make(map[string]int)
 	for i, pkg := range pkgs {
-		pkgTids[pkg] = i + 1
+		pkgPids[pkg] = (iter+1)*100000 + i + 1
 	}
 
-	// Map tids to events
-	for i := range events {
-		pkg := safeStringArg(events[i].Args, "package")
-		events[i].Tid = pkgTids[pkg]
+	var events []TraceEvent
+
+	// We need to sort tests by runTime/contTime to allocate threads properly
+	var allTests []*testState
+	for _, ts := range states {
+		if !ts.runTime.IsZero() && !ts.endTime.IsZero() {
+			allTests = append(allTests, ts)
+		} else if ts.status != "" {
+			// missing start event fallback
+			ts.runTime = ts.endTime.Add(-time.Duration(ts.elapsed * float64(time.Second)))
+			allTests = append(allTests, ts)
+		}
 	}
 
-	// Append metadata events for thread names (packages)
-	for pkg, tid := range pkgTids {
+	sort.Slice(allTests, func(i, j int) bool {
+		t1 := allTests[i].contTime
+		if t1.IsZero() {
+			t1 = allTests[i].runTime
+		}
+		t2 := allTests[j].contTime
+		if t2.IsZero() {
+			t2 = allTests[j].runTime
+		}
+		return t1.Before(t2)
+	})
+
+	type threadAlloc struct {
+		endTime time.Time
+	}
+	pkgThreads := make(map[string][]threadAlloc)
+
+	isRetry := iter > 0
+
+	for _, ts := range allTests {
+		pid := pkgPids[ts.pkg]
+		cname := "terrible"
+		if !ts.incomplete {
+			switch ts.status {
+			case "pass":
+				cname = "good"
+			case "fail":
+				cname = "bad"
+			case "skip":
+				cname = "yellow"
+			}
+		}
+
+		cat := "test"
+		name := ts.name
+		if name == "" {
+			name = ts.pkg
+			cat = "package"
+		}
+		if isRetry && ts.name != "" {
+			name += " [FLAKE_RETRY]"
+		}
+
+		args := map[string]any{
+			"package":   ts.pkg,
+			"status":    ts.status,
+			"iteration": iter + 1,
+		}
+		if ts.isParallel {
+			args["is_parallel"] = true
+		}
+		if isRetry {
+			args["flaky_retry"] = true
+		}
+		if ts.incomplete {
+			args["incomplete"] = true
+		}
+		outStr := ts.getOutput()
+		if outStr != "" {
+			args["output"] = outStr
+		}
+
+		if ts.isParallel && !ts.pauseTime.IsZero() && !ts.contTime.IsZero() {
+			// 1. run -> pause (tid 0)
+			dur1 := max(ts.pauseTime.Sub(ts.runTime).Microseconds(), 0)
+			if dur1 > 0 {
+				events = append(events, TraceEvent{
+					Name:  name,
+					Cat:   cat,
+					Ph:    "X",
+					Ts:    ts.runTime.UnixMicro(),
+					Dur:   dur1,
+					Pid:   pid,
+					Tid:   0,
+					Cname: cname,
+					Args:  args,
+				})
+			}
+
+			// Allocate worker thread
+			threads := pkgThreads[ts.pkg]
+			tid := -1
+			for i, th := range threads {
+				if !ts.contTime.Before(th.endTime) {
+					threads[i].endTime = ts.endTime
+					tid = i + 1
+					break
+				}
+			}
+			if tid == -1 {
+				threads = append(threads, threadAlloc{endTime: ts.endTime})
+				pkgThreads[ts.pkg] = threads
+				tid = len(threads)
+			}
+
+			// 2. pause -> cont (queued)
+			durWait := max(ts.contTime.Sub(ts.pauseTime).Microseconds(), 0)
+			if durWait > 0 {
+				events = append(events, TraceEvent{
+					Name:  name + " (queued)",
+					Cat:   cat,
+					Ph:    "X",
+					Ts:    ts.pauseTime.UnixMicro(),
+					Dur:   durWait,
+					Pid:   pid,
+					Tid:   tid,
+					Cname: "thread_state_sleeping",
+					Args:  args,
+				})
+			}
+
+			// 3. cont -> endTime (tid worker)
+			durExec := max(ts.endTime.Sub(ts.contTime).Microseconds(), 0)
+			if durExec == 0 && ts.elapsed > 0 {
+				durExec = int64(ts.elapsed * 1e6)
+			}
+			events = append(events, TraceEvent{
+				Name:  name,
+				Cat:   cat,
+				Ph:    "X",
+				Ts:    ts.contTime.UnixMicro(),
+				Dur:   durExec,
+				Pid:   pid,
+				Tid:   tid,
+				Cname: cname,
+				Args:  args,
+			})
+		} else {
+			// Sequential or package
+			dur := max(ts.endTime.Sub(ts.runTime).Microseconds(), 0)
+			if dur == 0 && ts.elapsed > 0 {
+				dur = int64(ts.elapsed * 1e6)
+			}
+			events = append(events, TraceEvent{
+				Name:  name,
+				Cat:   cat,
+				Ph:    "X",
+				Ts:    ts.runTime.UnixMicro(),
+				Dur:   dur,
+				Pid:   pid,
+				Tid:   0,
+				Cname: cname,
+				Args:  args,
+			})
+		}
+	}
+
+	// Append metadata events for thread names and process names
+	for pkg, pid := range pkgPids {
+		procName := fmt.Sprintf("%s - %s", procPrefix, pkg)
+		events = append(events, TraceEvent{
+			Name: "process_name",
+			Ph:   "M",
+			Pid:  pid,
+			Args: map[string]any{"name": procName},
+		})
+		events = append(events, TraceEvent{
+			Name: "process_sort_index",
+			Ph:   "M",
+			Pid:  pid,
+			Args: map[string]any{"sort_index": pid},
+		})
+
 		events = append(events, TraceEvent{
 			Name: "thread_name",
 			Ph:   "M",
 			Pid:  pid,
-			Tid:  tid,
-			Args: map[string]any{
-				"name": pkg,
-			},
+			Tid:  0,
+			Args: map[string]any{"name": "Main"},
 		})
-		events = append(events, TraceEvent{
-			Name: "thread_sort_index",
-			Ph:   "M",
-			Pid:  pid,
-			Tid:  tid,
-			Args: map[string]any{
-				"sort_index": tid,
-			},
-		})
+
+		for i := range pkgThreads[pkg] {
+			tid := i + 1
+			events = append(events, TraceEvent{
+				Name: "thread_name",
+				Ph:   "M",
+				Pid:  pid,
+				Tid:  tid,
+				Args: map[string]any{"name": fmt.Sprintf("Worker %d", tid)},
+			})
+		}
 	}
 
 	return events, nil
@@ -227,38 +397,19 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 		if err != nil {
 			return err
 		}
-		events, err := parseTraceEvents(f, iter, out)
+		procPrefix := fmt.Sprintf("Iter %d", iter+1)
+		if rep != nil && iter < len(rep.IterationSummaries) {
+			s := rep.IterationSummaries[iter]
+			if s.ShuffleSeed > 0 {
+				procPrefix = fmt.Sprintf("Iter %d (Seed %d)", iter+1, s.ShuffleSeed)
+			}
+		}
+
+		events, err := parseTraceEvents(f, iter, procPrefix, out)
 		_ = f.Close()
 		if err != nil {
 			return err
 		}
-
-		pid := iter + 1
-		// Add process name metadata event
-		procName := fmt.Sprintf("Iteration %d", iter+1)
-		if rep != nil && iter < len(rep.IterationSummaries) {
-			s := rep.IterationSummaries[iter]
-			if s.ShuffleSeed > 0 {
-				procName = fmt.Sprintf("Iteration %d (Seed %d)", iter+1, s.ShuffleSeed)
-			}
-		}
-
-		allEvents = append(allEvents, TraceEvent{
-			Name: "process_name",
-			Ph:   "M",
-			Pid:  pid,
-			Args: map[string]any{
-				"name": procName,
-			},
-		})
-		allEvents = append(allEvents, TraceEvent{
-			Name: "process_sort_index",
-			Ph:   "M",
-			Pid:  pid,
-			Args: map[string]any{
-				"sort_index": pid,
-			},
-		})
 
 		allEvents = append(allEvents, events...)
 	}

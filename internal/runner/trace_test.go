@@ -28,7 +28,7 @@ func TestTraceGeneration(t *testing.T) {
 `
 
 	// 2. Act: Parse using a new function or helper that handles tracing
-	events, err := parseTraceEvents(strings.NewReader(input), 0, nil)
+	events, err := parseTraceEvents(strings.NewReader(input), 0, "Iter 1", nil)
 	require.NoError(t, err)
 
 	// 3. Assert: Verify the trace events generated match expectations
@@ -112,7 +112,7 @@ func TestTraceGeneration_TableDriven(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			events, err := parseTraceEvents(strings.NewReader(tc.input), 0, nil)
+			events, err := parseTraceEvents(strings.NewReader(tc.input), 0, "Iter 1", nil)
 			require.NoError(t, err)
 			tc.expectedEvents(t, events)
 		})
@@ -164,20 +164,20 @@ func TestWriteTrace(t *testing.T) {
 	// Verify specific process name metadata and duration events
 	var hasProc1, hasProc2, hasThreadName, hasPkg1Event, hasPkg2Event bool
 	for _, ev := range traceEvents {
-		if ev.Name == "process_name" && ev.Pid == 1 && ev.Args["name"] == "Iteration 1 (Seed 123)" {
+		if ev.Name == "process_name" && ev.Pid == 100001 && ev.Args["name"] == "Iter 1 (Seed 123) - pkg1" {
 			hasProc1 = true
 		}
-		if ev.Name == "process_name" && ev.Pid == 2 && ev.Args["name"] == "Iteration 2 (Seed 456)" {
+		if ev.Name == "process_name" && ev.Pid == 200001 && ev.Args["name"] == "Iter 2 (Seed 456) - pkg1" {
 			hasProc2 = true
 		}
-		if ev.Name == "thread_name" && ev.Pid == 1 && ev.Args["name"] == "pkg1" {
+		if ev.Name == "thread_name" && ev.Pid == 100001 && ev.Args["name"] == "Main" {
 			hasThreadName = true
 		}
 		if ev.Name == "pkg1" && ev.Ph == "X" {
-			if ev.Pid == 1 && ev.Dur == 300000 {
+			if ev.Pid == 100001 && ev.Dur == 300000 {
 				hasPkg1Event = true
 			}
-			if ev.Pid == 2 && ev.Dur == 200000 {
+			if ev.Pid == 200001 && ev.Dur == 200000 {
 				hasPkg2Event = true
 			}
 		}
@@ -256,7 +256,7 @@ func TestTraceGeneration_LargeLine(t *testing.T) {
 	largeOutput := strings.Repeat("A", 1024*1024)
 	input := `{"Time":"2026-06-03T12:00:00.000000Z","Action":"output","Package":"pkg1","Test":"TestA","Output":"` + largeOutput + `"}` + "\n"
 
-	events, err := parseTraceEvents(strings.NewReader(input), 0, nil)
+	events, err := parseTraceEvents(strings.NewReader(input), 0, "Iter 1", nil)
 	require.NoError(t, err)
 	for _, ev := range events {
 		assert.NotEqual(t, "X", ev.Ph, "Should not produce a duration event for output action")
@@ -298,7 +298,7 @@ func TestParseTraceEvents_MalformedJSONL(t *testing.T) {
 	input := "{not valid json}\n" +
 		`{"Time":"2026-06-03T12:00:00.000000Z","Action":"pass","Package":"pkg1","Elapsed":0.1}` + "\n"
 
-	events, err := parseTraceEvents(strings.NewReader(input), 2, out)
+	events, err := parseTraceEvents(strings.NewReader(input), 2, "Iter 3", out)
 	require.NoError(t, err)
 	assert.Contains(t, stderr.String(), "trace: skip malformed jsonl (iteration 2)")
 	assert.NotEmpty(t, events)
