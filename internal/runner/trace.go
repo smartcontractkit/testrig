@@ -94,7 +94,7 @@ func parseTraceEvents(
 	iter int,
 	iterPrefix string,
 	out *output.Printer,
-	pkgPids map[string]int,
+	pkgIndexes map[string]int,
 ) ([]TraceEvent, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
@@ -171,8 +171,8 @@ func parseTraceEvents(
 	}
 
 	for pkg := range uniquePackages {
-		if _, ok := pkgPids[pkg]; !ok {
-			pkgPids[pkg] = len(pkgPids) + 1
+		if _, ok := pkgIndexes[pkg]; !ok {
+			pkgIndexes[pkg] = len(pkgIndexes) + 1
 		}
 	}
 
@@ -226,10 +226,10 @@ func parseTraceEvents(
 		return tid
 	}
 
-	baseTid := (iter + 1) * 10000
+	pid := iter + 1
 
 	for _, ts := range allTests {
-		pid := pkgPids[ts.pkg]
+		pkgIndex := pkgIndexes[ts.pkg]
 		cname := "terrible"
 		if !ts.incomplete {
 			switch ts.status {
@@ -282,7 +282,7 @@ func parseTraceEvents(
 					Ts:    ts.runTime.UnixMicro(),
 					Dur:   dur1,
 					Pid:   pid,
-					Tid:   baseTid + 1 + tid,
+					Tid:   (pkgIndex * 1000) + 1 + tid,
 					Cname: cname,
 					Args:  args,
 				})
@@ -301,7 +301,7 @@ func parseTraceEvents(
 				Ts:    ts.contTime.UnixMicro(),
 				Dur:   durExec,
 				Pid:   pid,
-				Tid:   baseTid + 1 + tid,
+				Tid:   (pkgIndex * 1000) + 1 + tid,
 				Cname: cname,
 				Args:  args,
 			})
@@ -324,7 +324,7 @@ func parseTraceEvents(
 				Ts:    ts.runTime.UnixMicro(),
 				Dur:   dur,
 				Pid:   pid,
-				Tid:   baseTid + tid,
+				Tid:   (pkgIndex * 1000) + tid,
 				Cname: cname,
 				Args:  args,
 			})
@@ -332,27 +332,36 @@ func parseTraceEvents(
 	}
 
 	// Append metadata events for thread names and process names
+	events = append(events, TraceEvent{
+		Name: "process_name",
+		Ph:   "M",
+		Pid:  pid,
+		Args: map[string]any{"name": iterPrefix},
+	})
+	events = append(events, TraceEvent{
+		Name: "process_sort_index",
+		Ph:   "M",
+		Pid:  pid,
+		Args: map[string]any{"sort_index": pid},
+	})
+
 	for pkg := range uniquePackages {
-		pid := pkgPids[pkg]
-		events = append(events, TraceEvent{
-			Name: "process_name",
-			Ph:   "M",
-			Pid:  pid,
-			Args: map[string]any{"name": pkg},
-		})
-		events = append(events, TraceEvent{
-			Name: "process_sort_index",
-			Ph:   "M",
-			Pid:  pid,
-			Args: map[string]any{"sort_index": pid},
-		})
+		pkgIndex := pkgIndexes[pkg]
+		baseTid := pkgIndex * 1000
 
 		events = append(events, TraceEvent{
 			Name: "thread_name",
 			Ph:   "M",
 			Pid:  pid,
 			Tid:  baseTid + 0,
-			Args: map[string]any{"name": fmt.Sprintf("%s Package", iterPrefix)},
+			Args: map[string]any{"name": fmt.Sprintf("%s (Package)", pkg)},
+		})
+		events = append(events, TraceEvent{
+			Name: "thread_sort_index",
+			Ph:   "M",
+			Pid:  pid,
+			Tid:  baseTid + 0,
+			Args: map[string]any{"sort_index": baseTid + 0},
 		})
 
 		for i := range pkgThreads[pkg] {
@@ -361,7 +370,14 @@ func parseTraceEvents(
 				Ph:   "M",
 				Pid:  pid,
 				Tid:  baseTid + 1 + i,
-				Args: map[string]any{"name": fmt.Sprintf("%s Thread %d", iterPrefix, i+1)},
+				Args: map[string]any{"name": fmt.Sprintf("%s (Thread %d)", pkg, i+1)},
+			})
+			events = append(events, TraceEvent{
+				Name: "thread_sort_index",
+				Ph:   "M",
+				Pid:  pid,
+				Tid:  baseTid + 1 + i,
+				Args: map[string]any{"sort_index": baseTid + 1 + i},
 			})
 		}
 	}
@@ -380,7 +396,7 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 	})
 
 	allEvents := []TraceEvent{}
-	pkgPids := make(map[string]int)
+	pkgIndexes := make(map[string]int)
 
 	for _, path := range matches {
 		iter := iterNumber(path)
@@ -399,7 +415,7 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 			}
 		}
 
-		events, err := parseTraceEvents(f, iter, iterPrefix, out, pkgPids)
+		events, err := parseTraceEvents(f, iter, iterPrefix, out, pkgIndexes)
 		_ = f.Close()
 		if err != nil {
 			return err

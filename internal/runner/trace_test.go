@@ -164,24 +164,23 @@ func TestWriteTrace(t *testing.T) {
 	// Verify specific process name metadata and duration events
 	var hasProc1, hasThreadName, hasPkg1Event, hasPkg2Event bool
 	for _, ev := range traceEvents {
-		if ev.Name == "process_name" && ev.Pid == 1 && ev.Args["name"] == "pkg1" {
+		if ev.Name == "process_name" && ev.Pid == 1 && ev.Args["name"] == "Iter 1 (Seed 123)" {
 			hasProc1 = true
 		}
-		if ev.Name == "thread_name" && ev.Pid == 1 && ev.Tid == 10000 &&
-			ev.Args["name"] == "Iter 1 (Seed 123) Package" {
+		if ev.Name == "thread_name" && ev.Pid == 1 && ev.Tid == 1000 && ev.Args["name"] == "pkg1 (Package)" {
 			hasThreadName = true
 		}
 		if ev.Name == "pkg1" && ev.Ph == "X" {
-			if ev.Pid == 1 && ev.Dur == 300000 && ev.Tid == 10000 {
+			if ev.Pid == 1 && ev.Dur == 300000 && ev.Tid == 1000 {
 				hasPkg1Event = true
 			}
-			if ev.Pid == 1 && ev.Dur == 200000 && ev.Tid == 20000 {
+			if ev.Pid == 2 && ev.Dur == 200000 && ev.Tid == 1000 {
 				hasPkg2Event = true
 			}
 		}
 	}
-	assert.True(t, hasProc1, "should have process name for pkg1")
-	assert.True(t, hasThreadName, "should have thread name for pkg1 Iter 1")
+	assert.True(t, hasProc1, "should have process name for Iter 1")
+	assert.True(t, hasThreadName, "should have thread name for pkg1 (Package)")
 	assert.True(t, hasPkg1Event, "should have pkg1 event in Iteration 1 (300ms)")
 	assert.True(t, hasPkg2Event, "should have pkg1 event in Iteration 2 (200ms)")
 }
