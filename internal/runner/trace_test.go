@@ -110,6 +110,7 @@ func TestTraceGeneration_TableDriven(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			events, err := parseTraceEvents(strings.NewReader(tc.input), 0, nil, make(map[string]int))
 			require.NoError(t, err)
 			tc.expectedEvents(t, events)
