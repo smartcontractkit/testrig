@@ -27,8 +27,7 @@ func TestTraceGeneration(t *testing.T) {
 {"Time":"2026-06-03T12:00:00.300000Z","Action":"pass","Package":"pkg1","Elapsed":0.3}
 `
 
-	// 2. Act: Parse using a new function or helper that handles tracing
-	events, err := parseTraceEvents(strings.NewReader(input), 0, "Iter 1", nil, make(map[string]int))
+	events, err := parseTraceEvents(strings.NewReader(input), 0, nil, make(map[string]int))
 	require.NoError(t, err)
 
 	// 3. Assert: Verify the trace events generated match expectations
@@ -111,8 +110,7 @@ func TestTraceGeneration_TableDriven(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			events, err := parseTraceEvents(strings.NewReader(tc.input), 0, "Iter 1", nil, make(map[string]int))
+			events, err := parseTraceEvents(strings.NewReader(tc.input), 0, nil, make(map[string]int))
 			require.NoError(t, err)
 			tc.expectedEvents(t, events)
 		})
@@ -137,17 +135,10 @@ func TestWriteTrace(t *testing.T) {
 	err = os.WriteFile(filepath.Join(tmpDir, "iteration-1.log.jsonl"), []byte(log2), 0600)
 	require.NoError(t, err)
 
-	report := &Report{
-		IterationSummaries: []IterationSummary{
-			{Index: 0, ShuffleSeed: 123},
-			{Index: 1, ShuffleSeed: 456},
-		},
-	}
-
 	// 1. Setup: Create sample JSONL file and write traces
 	// This ensures we test WriteTrace's parsing of iterations
 	var traceFiles []string
-	traceFiles, err = WriteTrace(nil, tmpDir, report)
+	traceFiles, err = WriteTrace(nil, tmpDir)
 	require.NoError(t, err)
 	require.Len(t, traceFiles, 2, "expected two trace files to be written")
 
@@ -172,27 +163,27 @@ func TestWriteTrace(t *testing.T) {
 	// Verify specific process name metadata and duration events in Iteration 1
 	var hasProc1, hasThreadName, hasPkg1Event bool
 	for _, ev := range traceEvents1 {
-		if ev.Name == "process_name" && ev.Pid == 1 && ev.Args["name"] == "Iter 1 (Seed 123)" {
+		if ev.Name == "process_name" && ev.Pid == 1 && ev.Args["name"] == "pkg1" {
 			hasProc1 = true
 		}
-		if ev.Name == "thread_name" && ev.Pid == 1 && ev.Tid == 1000 && ev.Args["name"] == "pkg1 (Package)" {
+		if ev.Name == "thread_name" && ev.Pid == 1 && ev.Tid == 0 && ev.Args["name"] == "Main" {
 			hasThreadName = true
 		}
 		if ev.Name == "pkg1" && ev.Ph == "X" {
-			if ev.Pid == 1 && ev.Dur == 300000 && ev.Tid == 1000 {
+			if ev.Pid == 1 && ev.Dur == 300000 && ev.Tid == 0 {
 				hasPkg1Event = true
 			}
 		}
 	}
-	assert.True(t, hasProc1, "should have process name for Iter 1")
-	assert.True(t, hasThreadName, "should have thread name for pkg1 (Package)")
+	assert.True(t, hasProc1, "should have process name for pkg1")
+	assert.True(t, hasThreadName, "should have thread name for Main")
 	assert.True(t, hasPkg1Event, "should have pkg1 event in Iteration 1 (300ms)")
 
 	// Verify specific events in Iteration 2
 	var hasPkg2Event bool
 	for _, ev := range traceEvents2 {
 		if ev.Name == "pkg1" && ev.Ph == "X" {
-			if ev.Pid == 2 && ev.Dur == 200000 && ev.Tid == 1000 {
+			if ev.Pid == 1 && ev.Dur == 200000 && ev.Tid == 0 {
 				hasPkg2Event = true
 			}
 		}
@@ -280,8 +271,7 @@ func TestTraceGeneration_LargeLine(t *testing.T) {
 	t.Parallel()
 	largeOutput := strings.Repeat("A", 1024*1024)
 	input := `{"Time":"2026-06-03T12:00:00.000000Z","Action":"output","Package":"pkg1","Test":"TestA","Output":"` + largeOutput + `"}` + "\n"
-
-	events, err := parseTraceEvents(strings.NewReader(input), 0, "Iter 1", nil, make(map[string]int))
+	events, err := parseTraceEvents(strings.NewReader(input), 0, nil, make(map[string]int))
 	require.NoError(t, err)
 	for _, ev := range events {
 		assert.NotEqual(t, "X", ev.Ph, "Should not produce a duration event for output action")
@@ -295,7 +285,7 @@ func TestWriteTrace_EmptyMatches(t *testing.T) {
 	var stderr strings.Builder
 	out := output.NewForTest(false, io.Discard, &stderr, false)
 
-	files, err := WriteTrace(out, tmpDir, nil)
+	files, err := WriteTrace(out, tmpDir)
 	require.NoError(t, err)
 	assert.Empty(t, files)
 
@@ -309,7 +299,7 @@ func TestWriteTrace_InvalidIterationName(t *testing.T) {
 	err := os.WriteFile(filepath.Join(tmpDir, "iteration-invalid.log.jsonl"), []byte("{}"), 0600)
 	require.NoError(t, err)
 
-	files, err := WriteTrace(nil, tmpDir, &Report{})
+	files, err := WriteTrace(nil, tmpDir)
 	require.NoError(t, err)
 	assert.Empty(t, files)
 }
@@ -322,7 +312,7 @@ func TestParseTraceEvents_MalformedJSONL(t *testing.T) {
 	input := "{not valid json}\n" +
 		`{"Time":"2026-06-03T12:00:00.000000Z","Action":"pass","Package":"pkg1","Elapsed":0.1}` + "\n"
 
-	events, err := parseTraceEvents(strings.NewReader(input), 2, "Iter 3", out, make(map[string]int))
+	events, err := parseTraceEvents(strings.NewReader(input), 2, out, make(map[string]int))
 	require.NoError(t, err)
 	assert.Contains(t, stderr.String(), "trace: skip malformed jsonl (iteration 2)")
 	assert.NotEmpty(t, events)

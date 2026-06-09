@@ -93,7 +93,6 @@ func (ts *testState) getOutput() string {
 func parseTraceEvents(
 	r io.Reader,
 	iter int,
-	iterPrefix string,
 	out *output.Printer,
 	pkgIndexes map[string]int,
 ) ([]TraceEvent, error) {
@@ -227,10 +226,8 @@ func parseTraceEvents(
 		return tid
 	}
 
-	pid := iter + 1
-
 	for _, ts := range allTests {
-		pkgIndex := pkgIndexes[ts.pkg]
+		pid := pkgIndexes[ts.pkg]
 		cname := "terrible"
 		if !ts.incomplete {
 			switch ts.status {
@@ -283,7 +280,7 @@ func parseTraceEvents(
 					Ts:    ts.runTime.UnixMicro(),
 					Dur:   dur1,
 					Pid:   pid,
-					Tid:   (pkgIndex * 1000) + 1 + tid,
+					Tid:   1 + tid,
 					Cname: cname,
 					Args:  args,
 				})
@@ -302,7 +299,7 @@ func parseTraceEvents(
 				Ts:    ts.contTime.UnixMicro(),
 				Dur:   durExec,
 				Pid:   pid,
-				Tid:   (pkgIndex * 1000) + 1 + tid,
+				Tid:   1 + tid,
 				Cname: cname,
 				Args:  args,
 			})
@@ -325,7 +322,7 @@ func parseTraceEvents(
 				Ts:    ts.runTime.UnixMicro(),
 				Dur:   dur,
 				Pid:   pid,
-				Tid:   (pkgIndex * 1000) + tid,
+				Tid:   tid,
 				Cname: cname,
 				Args:  args,
 			})
@@ -333,36 +330,35 @@ func parseTraceEvents(
 	}
 
 	// Append metadata events for thread names and process names
-	events = append(events, TraceEvent{
-		Name: "process_name",
-		Ph:   "M",
-		Pid:  pid,
-		Args: map[string]any{"name": iterPrefix},
-	})
-	events = append(events, TraceEvent{
-		Name: "process_sort_index",
-		Ph:   "M",
-		Pid:  pid,
-		Args: map[string]any{"sort_index": pid},
-	})
-
 	for pkg := range uniquePackages {
-		pkgIndex := pkgIndexes[pkg]
-		baseTid := pkgIndex * 1000
+		pid := pkgIndexes[pkg]
+
+		events = append(events, TraceEvent{
+			Name: "process_name",
+			Ph:   "M",
+			Pid:  pid,
+			Args: map[string]any{"name": pkg},
+		})
+		events = append(events, TraceEvent{
+			Name: "process_sort_index",
+			Ph:   "M",
+			Pid:  pid,
+			Args: map[string]any{"sort_index": pid},
+		})
 
 		events = append(events, TraceEvent{
 			Name: "thread_name",
 			Ph:   "M",
 			Pid:  pid,
-			Tid:  baseTid + 0,
-			Args: map[string]any{"name": fmt.Sprintf("%s (Package)", pkg)},
+			Tid:  0,
+			Args: map[string]any{"name": "Main"},
 		})
 		events = append(events, TraceEvent{
 			Name: "thread_sort_index",
 			Ph:   "M",
 			Pid:  pid,
-			Tid:  baseTid + 0,
-			Args: map[string]any{"sort_index": baseTid + 0},
+			Tid:  0,
+			Args: map[string]any{"sort_index": 0},
 		})
 
 		for i := range pkgThreads[pkg] {
@@ -370,15 +366,15 @@ func parseTraceEvents(
 				Name: "thread_name",
 				Ph:   "M",
 				Pid:  pid,
-				Tid:  baseTid + 1 + i,
-				Args: map[string]any{"name": fmt.Sprintf("%s (Thread %d)", pkg, i+1)},
+				Tid:  1 + i,
+				Args: map[string]any{"name": fmt.Sprintf("Thread %d", i+1)},
 			})
 			events = append(events, TraceEvent{
 				Name: "thread_sort_index",
 				Ph:   "M",
 				Pid:  pid,
-				Tid:  baseTid + 1 + i,
-				Args: map[string]any{"sort_index": baseTid + 1 + i},
+				Tid:  1 + i,
+				Args: map[string]any{"sort_index": 1 + i},
 			})
 		}
 	}
@@ -388,7 +384,7 @@ func parseTraceEvents(
 
 // WriteTrace parses iteration logs under resultsDir and writes a separate trace-<N>.json file per iteration.
 // It returns a list of the generated filenames.
-func WriteTrace(out *output.Printer, resultsDir string, rep *Report) ([]string, error) {
+func WriteTrace(out *output.Printer, resultsDir string) ([]string, error) {
 	matches, err := filepath.Glob(filepath.Join(resultsDir, "iteration-*.log.jsonl"))
 	if err != nil {
 		return nil, err
@@ -409,15 +405,7 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) ([]string, 
 		if err != nil {
 			return nil, err
 		}
-		iterPrefix := fmt.Sprintf("Iter %d", iter+1)
-		if rep != nil && iter < len(rep.IterationSummaries) {
-			s := rep.IterationSummaries[iter]
-			if s.ShuffleSeed > 0 {
-				iterPrefix = fmt.Sprintf("Iter %d (Seed %d)", iter+1, s.ShuffleSeed)
-			}
-		}
-
-		events, err := parseTraceEvents(f, iter, iterPrefix, out, pkgIndexes)
+		events, err := parseTraceEvents(f, iter, out, pkgIndexes)
 		_ = f.Close()
 		if err != nil {
 			return nil, err

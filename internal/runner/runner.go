@@ -227,7 +227,7 @@ func Diagnose(
 	var traceFiles []string
 	if conf.Trace {
 		var err error
-		traceFiles, err = WriteTrace(out, resultsDir, report)
+		traceFiles, err = WriteTrace(out, resultsDir)
 		if err != nil {
 			out.Stderrf("write trace: %v\n", err)
 			return err
