@@ -224,8 +224,11 @@ func Diagnose(
 	reportPath := filepath.Join(resultsDir, "report.json")
 	csvPath := diagnoseCSVPath(resultsDir, report)
 	traceJSONPath := ""
+	var traceFiles []string
 	if conf.Trace {
-		if err := WriteTrace(out, resultsDir, report); err != nil {
+		var err error
+		traceFiles, err = WriteTrace(out, resultsDir)
+		if err != nil {
 			out.Stderrf("write trace: %v\n", err)
 			return err
 		}
@@ -249,7 +252,7 @@ func Diagnose(
 	}
 	printDiagnoseArtifactsFooter(out, resultsDir, reportPath, csvPath, traceJSONPath)
 	if conf.Trace && traceViewerEnabled() {
-		if err := ServeTrace(ctx, resultsDir, out, TraceServeOptions{}); err != nil {
+		if err := ServeTrace(ctx, resultsDir, traceFiles, out, TraceServeOptions{}); err != nil {
 			out.Stderrf("serve trace: %v\n", err)
 			return err
 		}
