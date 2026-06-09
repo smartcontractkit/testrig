@@ -89,7 +89,13 @@ func (ts *testState) getOutput() string {
 // parseTraceEvents parses a go test -json stream for a single iteration and returns trace events.
 //
 //nolint:gocyclo // Parses a complex JSON stream and allocates threads.
-func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Printer) ([]TraceEvent, error) {
+func parseTraceEvents(
+	r io.Reader,
+	iter int,
+	iterPrefix string,
+	out *output.Printer,
+	pkgPids map[string]int,
+) ([]TraceEvent, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 
@@ -164,16 +170,10 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 		}
 	}
 
-	// Alphabetize unique packages to give them consistent PIDs
-	var pkgs []string
 	for pkg := range uniquePackages {
-		pkgs = append(pkgs, pkg)
-	}
-	sort.Strings(pkgs)
-
-	pkgPids := make(map[string]int)
-	for i, pkg := range pkgs {
-		pkgPids[pkg] = (iter+1)*100000 + i + 1
+		if _, ok := pkgPids[pkg]; !ok {
+			pkgPids[pkg] = len(pkgPids) + 1
+		}
 	}
 
 	var events []TraceEvent
@@ -206,15 +206,9 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 		endTime time.Time
 	}
 	pkgThreads := make(map[string][]threadAlloc)
-	pkgQThreads := make(map[string][]threadAlloc)
 
-	allocSlot := func(pkg string, start, end time.Time, isQueue bool) int {
-		var threads []threadAlloc
-		if isQueue {
-			threads = pkgQThreads[pkg]
-		} else {
-			threads = pkgThreads[pkg]
-		}
+	allocSlot := func(pkg string, start, end time.Time) int {
+		threads := pkgThreads[pkg]
 
 		tid := -1
 		for i, th := range threads {
@@ -226,15 +220,13 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 		}
 		if tid == -1 {
 			threads = append(threads, threadAlloc{endTime: end})
-			if isQueue {
-				pkgQThreads[pkg] = threads
-			} else {
-				pkgThreads[pkg] = threads
-			}
+			pkgThreads[pkg] = threads
 			tid = len(threads) - 1
 		}
 		return tid
 	}
+
+	baseTid := (iter + 1) * 10000
 
 	for _, ts := range allTests {
 		pid := pkgPids[ts.pkg]
@@ -282,7 +274,7 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 			// 1. run -> pause
 			dur1 := max(ts.pauseTime.Sub(ts.runTime).Microseconds(), 0)
 			if dur1 > 0 {
-				tid := allocSlot(ts.pkg, ts.runTime, ts.pauseTime, false)
+				tid := allocSlot(ts.pkg, ts.runTime, ts.pauseTime)
 				events = append(events, TraceEvent{
 					Name:  name,
 					Cat:   cat,
@@ -290,35 +282,18 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 					Ts:    ts.runTime.UnixMicro(),
 					Dur:   dur1,
 					Pid:   pid,
-					Tid:   1 + tid,
+					Tid:   baseTid + 1 + tid,
 					Cname: cname,
 					Args:  args,
 				})
 			}
 
-			// 2. pause -> cont (queued)
-			durWait := max(ts.contTime.Sub(ts.pauseTime).Microseconds(), 0)
-			if durWait > 0 {
-				qTid := allocSlot(ts.pkg, ts.pauseTime, ts.contTime, true)
-				events = append(events, TraceEvent{
-					Name:  name + " (queued)",
-					Cat:   cat,
-					Ph:    "X",
-					Ts:    ts.pauseTime.UnixMicro(),
-					Dur:   durWait,
-					Pid:   pid,
-					Tid:   1000 + qTid,
-					Cname: "thread_state_sleeping",
-					Args:  args,
-				})
-			}
-
-			// 3. cont -> endTime
+			// 2. cont -> endTime
 			durExec := max(ts.endTime.Sub(ts.contTime).Microseconds(), 0)
 			if durExec == 0 && ts.elapsed > 0 {
 				durExec = int64(ts.elapsed * 1e6)
 			}
-			tid := allocSlot(ts.pkg, ts.contTime, ts.endTime, false)
+			tid := allocSlot(ts.pkg, ts.contTime, ts.endTime)
 			events = append(events, TraceEvent{
 				Name:  name,
 				Cat:   cat,
@@ -326,7 +301,7 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 				Ts:    ts.contTime.UnixMicro(),
 				Dur:   durExec,
 				Pid:   pid,
-				Tid:   1 + tid,
+				Tid:   baseTid + 1 + tid,
 				Cname: cname,
 				Args:  args,
 			})
@@ -339,7 +314,7 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 
 			tid := 0
 			if cat != "package" {
-				tid = 1 + allocSlot(ts.pkg, ts.runTime, ts.endTime, false)
+				tid = 1 + allocSlot(ts.pkg, ts.runTime, ts.endTime)
 			}
 
 			events = append(events, TraceEvent{
@@ -349,7 +324,7 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 				Ts:    ts.runTime.UnixMicro(),
 				Dur:   dur,
 				Pid:   pid,
-				Tid:   tid,
+				Tid:   baseTid + tid,
 				Cname: cname,
 				Args:  args,
 			})
@@ -357,13 +332,13 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 	}
 
 	// Append metadata events for thread names and process names
-	for pkg, pid := range pkgPids {
-		procName := fmt.Sprintf("%s - %s", procPrefix, pkg)
+	for pkg := range uniquePackages {
+		pid := pkgPids[pkg]
 		events = append(events, TraceEvent{
 			Name: "process_name",
 			Ph:   "M",
 			Pid:  pid,
-			Args: map[string]any{"name": procName},
+			Args: map[string]any{"name": pkg},
 		})
 		events = append(events, TraceEvent{
 			Name: "process_sort_index",
@@ -376,8 +351,8 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 			Name: "thread_name",
 			Ph:   "M",
 			Pid:  pid,
-			Tid:  0,
-			Args: map[string]any{"name": "Package"},
+			Tid:  baseTid + 0,
+			Args: map[string]any{"name": fmt.Sprintf("%s Package", iterPrefix)},
 		})
 
 		for i := range pkgThreads[pkg] {
@@ -385,17 +360,8 @@ func parseTraceEvents(r io.Reader, iter int, procPrefix string, out *output.Prin
 				Name: "thread_name",
 				Ph:   "M",
 				Pid:  pid,
-				Tid:  1 + i,
-				Args: map[string]any{"name": fmt.Sprintf("Thread %d", i+1)},
-			})
-		}
-		for i := range pkgQThreads[pkg] {
-			events = append(events, TraceEvent{
-				Name: "thread_name",
-				Ph:   "M",
-				Pid:  pid,
-				Tid:  1000 + i,
-				Args: map[string]any{"name": fmt.Sprintf("Queue %d", i+1)},
+				Tid:  baseTid + 1 + i,
+				Args: map[string]any{"name": fmt.Sprintf("%s Thread %d", iterPrefix, i+1)},
 			})
 		}
 	}
@@ -414,6 +380,7 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 	})
 
 	allEvents := []TraceEvent{}
+	pkgPids := make(map[string]int)
 
 	for _, path := range matches {
 		iter := iterNumber(path)
@@ -424,15 +391,15 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 		if err != nil {
 			return err
 		}
-		procPrefix := fmt.Sprintf("Iter %d", iter+1)
+		iterPrefix := fmt.Sprintf("Iter %d", iter+1)
 		if rep != nil && iter < len(rep.IterationSummaries) {
 			s := rep.IterationSummaries[iter]
 			if s.ShuffleSeed > 0 {
-				procPrefix = fmt.Sprintf("Iter %d (Seed %d)", iter+1, s.ShuffleSeed)
+				iterPrefix = fmt.Sprintf("Iter %d (Seed %d)", iter+1, s.ShuffleSeed)
 			}
 		}
 
-		events, err := parseTraceEvents(f, iter, procPrefix, out)
+		events, err := parseTraceEvents(f, iter, iterPrefix, out, pkgPids)
 		_ = f.Close()
 		if err != nil {
 			return err
