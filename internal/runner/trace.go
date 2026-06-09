@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/term"
@@ -385,17 +386,18 @@ func parseTraceEvents(
 	return events, nil
 }
 
-// WriteTrace aggregates the iteration-*.log.jsonl files under resultsDir and writes trace.json.
-func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
+// WriteTrace parses iteration logs under resultsDir and writes a separate trace-<N>.json file per iteration.
+// It returns a list of the generated filenames.
+func WriteTrace(out *output.Printer, resultsDir string, rep *Report) ([]string, error) {
 	matches, err := filepath.Glob(filepath.Join(resultsDir, "iteration-*.log.jsonl"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		return iterNumber(matches[i]) < iterNumber(matches[j])
 	})
 
-	allEvents := []TraceEvent{}
+	var generatedFiles []string
 	pkgIndexes := make(map[string]int)
 
 	for _, path := range matches {
@@ -405,7 +407,7 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 		}
 		f, err := os.Open(path) //nolint:gosec // G304: path from filepath.Glob
 		if err != nil {
-			return err
+			return nil, err
 		}
 		iterPrefix := fmt.Sprintf("Iter %d", iter+1)
 		if rep != nil && iter < len(rep.IterationSummaries) {
@@ -418,30 +420,27 @@ func WriteTrace(out *output.Printer, resultsDir string, rep *Report) error {
 		events, err := parseTraceEvents(f, iter, iterPrefix, out, pkgIndexes)
 		_ = f.Close()
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		allEvents = append(allEvents, events...)
-	}
-
-	// Warn if no duration events were parsed
-	hasDurationEvents := false
-	for _, ev := range allEvents {
-		if ev.Ph == "X" {
-			hasDurationEvents = true
-			break
+		if len(events) > 0 {
+			b, err := json.MarshalIndent(events, "", "  ")
+			if err != nil {
+				return nil, err
+			}
+			filename := fmt.Sprintf("trace-%d.json", iter+1)
+			if err := os.WriteFile(filepath.Join(resultsDir, filename), b, 0600); err != nil {
+				return nil, err
+			}
+			generatedFiles = append(generatedFiles, filename)
 		}
 	}
-	if !hasDurationEvents && out != nil {
+
+	if len(generatedFiles) == 0 && out != nil {
 		out.Stderrf("warning: no test execution events recorded in trace\n")
 	}
 
-	// Write trace.json
-	b, err := json.MarshalIndent(allEvents, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(resultsDir, "trace.json"), b, 0600)
+	return generatedFiles, nil
 }
 
 // TraceServeOptions groups parameters for ServeTrace.
@@ -451,17 +450,23 @@ type TraceServeOptions struct {
 	OpenBrowser func(string) error
 }
 
-// ServeTrace serves trace.json at traceListenAddr, opens the Perfetto UI in a browser,
-// and blocks until the trace is fetched or ctx is cancelled.
+// ServeTrace serves trace files at traceListenAddr, opens the Perfetto UI in browser tabs,
+// and blocks until all traces are fetched or ctx is cancelled.
 func ServeTrace(
 	ctx context.Context,
 	resultsDir string,
+	files []string,
 	out *output.Printer,
 	opts TraceServeOptions,
 ) error {
-	tracePath := filepath.Join(resultsDir, "trace.json")
-	if _, err := os.Stat(tracePath); err != nil {
-		return fmt.Errorf("trace file not found at %s: %w", tracePath, err)
+	if len(files) == 0 {
+		return fmt.Errorf("no trace files provided to ServeTrace")
+	}
+	for _, f := range files {
+		tracePath := filepath.Join(resultsDir, f)
+		if _, err := os.Stat(tracePath); err != nil {
+			return fmt.Errorf("trace file not found at %s: %w", tracePath, err)
+		}
 	}
 
 	addr := opts.Addr
@@ -486,28 +491,45 @@ func ServeTrace(
 	srvCtx, srvCancel := context.WithCancel(ctx)
 	defer srvCancel()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/trace.json", func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin != "" && origin != "https://ui.perfetto.dev" {
-			http.Error(w, "Forbidden origin", http.StatusForbidden)
-			return
-		}
-		w.Header().Set("Access-Control-Allow-Origin", "https://ui.perfetto.dev")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Set("Access-Control-Allow-Private-Network", "true")
-		if r.Method == "OPTIONS" {
-			return
-		}
-		http.ServeFile(w, r, tracePath)
+	var fetches int32
+	var fetchesMu sync.Mutex
 
-		// Auto-exit after serving
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			srvCancel()
-		}()
-	})
+	mux := http.NewServeMux()
+	for _, file := range files {
+		mux.HandleFunc("/"+file, func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin != "" && origin != "https://ui.perfetto.dev" {
+				http.Error(w, "Forbidden origin", http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Access-Control-Allow-Origin", "https://ui.perfetto.dev")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Private-Network", "true")
+			if r.Method == "OPTIONS" {
+				return
+			}
+
+			// Serve the requested file
+			reqFile := filepath.Base(r.URL.Path)
+			tracePath := filepath.Join(resultsDir, reqFile)
+			http.ServeFile(w, r, tracePath)
+
+			// Safely count fetches. Wait until all files have been fetched.
+			fetchesMu.Lock()
+			fetches++
+			allFetched := int(fetches) >= len(files)
+			fetchesMu.Unlock()
+
+			if allFetched {
+				// Auto-exit after all files are served
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					srvCancel()
+				}()
+			}
+		})
+	}
 
 	server := &http.Server{
 		Handler: mux,
@@ -517,21 +539,23 @@ func ServeTrace(
 		_ = server.Serve(listener)
 	}()
 
-	perfettoURL := fmt.Sprintf("https://ui.perfetto.dev/#!/?url=http://%s/trace.json", listener.Addr().String())
-
 	if out != nil {
-		out.HumanStderr("\nOpening perfetto.dev trace in browser...\n")
+		out.HumanStderr("\nOpening perfetto.dev trace tabs in browser...\n")
 	} else {
-		fmt.Printf("\nOpening perfetto.dev trace in browser...\n")
+		fmt.Printf("\nOpening perfetto.dev trace tabs in browser...\n")
 	}
 
-	if err := openBrowserCB(perfettoURL); err != nil {
-		msg := fmt.Sprintf("open browser: %v\nOpen manually: %s\n", err, perfettoURL)
-		if out != nil {
-			out.Stderrf("%s", msg)
-		} else {
-			fmt.Fprint(os.Stderr, msg)
+	for _, file := range files {
+		perfettoURL := fmt.Sprintf("https://ui.perfetto.dev/#!/?url=http://%s/%s", listener.Addr().String(), file)
+		if err := openBrowserCB(perfettoURL); err != nil {
+			msg := fmt.Sprintf("open browser: %v\nOpen manually: %s\n", err, perfettoURL)
+			if out != nil {
+				out.Stderrf("%s", msg)
+			} else {
+				fmt.Fprint(os.Stderr, msg)
+			}
 		}
+		time.Sleep(100 * time.Millisecond) // Slight pause to prevent browser throttling
 	}
 
 	<-srvCtx.Done()

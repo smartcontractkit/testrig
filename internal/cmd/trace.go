@@ -48,19 +48,21 @@ testrig trace diagnose-20260604T120000Z
 				if info.IsDir() {
 					resultsDir = path
 				} else {
-					if filepath.Base(path) == "trace.json" {
-						resultsDir = filepath.Dir(path)
-					} else {
-						return fmt.Errorf("trace file must be named trace.json: %s", path)
-					}
+					return fmt.Errorf("trace path must be a directory: %s", path)
 				}
 			}
 
-			traceJSON := filepath.Join(resultsDir, "trace.json")
-			if _, err := os.Stat(traceJSON); err != nil {
-				return fmt.Errorf("trace.json not found in %s", resultsDir)
+			matches, err := filepath.Glob(filepath.Join(resultsDir, "trace-*.json"))
+			if err != nil || len(matches) == 0 {
+				return fmt.Errorf("no trace-*.json files found in %s", resultsDir)
 			}
-			return runner.ServeTrace(cmd.Context(), resultsDir, nil, runner.TraceServeOptions{})
+
+			var traceFiles []string
+			for _, m := range matches {
+				traceFiles = append(traceFiles, filepath.Base(m))
+			}
+
+			return runner.ServeTrace(cmd.Context(), resultsDir, traceFiles, nil, runner.TraceServeOptions{})
 		},
 	}
 	return cmd
