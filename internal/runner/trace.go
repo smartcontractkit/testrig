@@ -60,7 +60,7 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 	startTimes := make(map[traceKey]time.Time)
 	var events []TraceEvent
 	var lastSeenTime time.Time
-	uniquePackages := make(map[string]bool)
+	uniqueKeys := make(map[traceKey]bool)
 
 	pid := iter + 1
 
@@ -80,9 +80,6 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 			continue
 		}
 		lastSeenTime = ev.Time
-		if ev.Package != "" {
-			uniquePackages[ev.Package] = true
-		}
 
 		key := traceKey{Package: ev.Package, Test: ev.Test}
 
@@ -117,6 +114,12 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 				cat = "package"
 			}
 
+			traceK := traceKey{Package: ev.Package}
+			if ev.Test != "" {
+				traceK.Test = ev.Test
+			}
+			uniqueKeys[traceK] = true
+
 			events = append(events, TraceEvent{
 				Name: name,
 				Cat:  cat,
@@ -124,7 +127,7 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 				Ts:   start.UnixMicro(),
 				Dur:  dur,
 				Pid:  pid,
-				// Tid will be populated later after packages are sorted.
+				// Tid will be populated later after trace keys are sorted.
 				Args: map[string]any{
 					"package": ev.Package,
 					"action":  ev.Action,
@@ -148,6 +151,8 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 				name = key.Package
 				cat = "package"
 			}
+			uniqueKeys[key] = true
+
 			events = append(events, TraceEvent{
 				Name: name,
 				Cat:  cat,
@@ -163,33 +168,46 @@ func parseTraceEvents(r io.Reader, iter int, out *output.Printer) ([]TraceEvent,
 		}
 	}
 
-	// Alphabetize unique packages to give them consistent thread IDs
-	var pkgs []string
-	for pkg := range uniquePackages {
-		pkgs = append(pkgs, pkg)
+	// Alphabetize unique package/test keys to give them consistent thread IDs.
+	var keys []traceKey
+	for k := range uniqueKeys {
+		keys = append(keys, k)
 	}
-	sort.Strings(pkgs)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Package != keys[j].Package {
+			return keys[i].Package < keys[j].Package
+		}
+		return keys[i].Test < keys[j].Test
+	})
 
-	pkgTids := make(map[string]int)
-	for i, pkg := range pkgs {
-		pkgTids[pkg] = i + 1
+	keyTids := make(map[traceKey]int, len(keys))
+	for i, k := range keys {
+		keyTids[k] = i + 1
 	}
 
-	// Map tids to events
+	// Map tids to events.
 	for i := range events {
 		pkg := safeStringArg(events[i].Args, "package")
-		events[i].Tid = pkgTids[pkg]
+		test := ""
+		if events[i].Cat == "test" {
+			test = events[i].Name
+		}
+		events[i].Tid = keyTids[traceKey{Package: pkg, Test: test}]
 	}
 
-	// Append metadata events for thread names (packages)
-	for pkg, tid := range pkgTids {
+	// Append metadata events for thread names.
+	for k, tid := range keyTids {
+		threadName := k.Package
+		if k.Test != "" {
+			threadName = k.Package + " :: " + k.Test
+		}
 		events = append(events, TraceEvent{
 			Name: "thread_name",
 			Ph:   "M",
 			Pid:  pid,
 			Tid:  tid,
 			Args: map[string]any{
-				"name": pkg,
+				"name": threadName,
 			},
 		})
 		events = append(events, TraceEvent{

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,54 @@ import (
 
 	"github.com/smartcontractkit/testrig/internal/output"
 )
+
+func TestTraceGeneration_NoOverlappingSlicesPerTrack(t *testing.T) {
+	t.Parallel()
+
+	// Package and tests share one package track today; parallel subtests overlap too.
+	input := `{"Time":"2026-06-03T12:00:00.000000Z","Action":"start","Package":"pkg1"}
+{"Time":"2026-06-03T12:00:00.100000Z","Action":"run","Package":"pkg1","Test":"TestA"}
+{"Time":"2026-06-03T12:00:00.150000Z","Action":"run","Package":"pkg1","Test":"TestB"}
+{"Time":"2026-06-03T12:00:00.200000Z","Action":"pass","Package":"pkg1","Test":"TestA","Elapsed":0.1}
+{"Time":"2026-06-03T12:00:00.250000Z","Action":"pass","Package":"pkg1","Test":"TestB","Elapsed":0.1}
+{"Time":"2026-06-03T12:00:00.300000Z","Action":"pass","Package":"pkg1","Elapsed":0.3}
+`
+
+	events, err := parseTraceEvents(strings.NewReader(input), 0, nil)
+	require.NoError(t, err)
+	assertNoOverlappingTraceSlices(t, events)
+}
+
+func assertNoOverlappingTraceSlices(t *testing.T, events []TraceEvent) {
+	t.Helper()
+
+	type slice struct {
+		start, end int64
+		name       string
+	}
+	byTrack := make(map[[2]int][]slice)
+	for _, ev := range events {
+		if ev.Ph != "X" {
+			continue
+		}
+		track := [2]int{ev.Pid, ev.Tid}
+		byTrack[track] = append(byTrack[track], slice{
+			start: ev.Ts,
+			end:   ev.Ts + ev.Dur,
+			name:  ev.Name,
+		})
+	}
+
+	for track, slices := range byTrack {
+		sort.Slice(slices, func(i, j int) bool { return slices[i].start < slices[j].start })
+		for i := 1; i < len(slices); i++ {
+			prev, cur := slices[i-1], slices[i]
+			require.GreaterOrEqualf(t, cur.start, prev.end,
+				"overlapping X events on pid=%d tid=%d: %q [%d,%d) overlaps %q [%d,%d)",
+				track[0], track[1], prev.name, prev.start, prev.end, cur.name, cur.start, cur.end)
+		}
+	}
+}
 
 func TestTraceGeneration(t *testing.T) {
 	t.Parallel()
