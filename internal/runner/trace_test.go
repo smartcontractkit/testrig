@@ -170,7 +170,7 @@ func TestWriteTrace(t *testing.T) {
 		if ev.Name == "process_name" && ev.Pid == 200001 && ev.Args["name"] == "Iter 2 (Seed 456) - pkg1" {
 			hasProc2 = true
 		}
-		if ev.Name == "thread_name" && ev.Pid == 100001 && ev.Args["name"] == "Main" {
+		if ev.Name == "thread_name" && ev.Pid == 100001 && ev.Tid == 0 && ev.Args["name"] == "Package" {
 			hasThreadName = true
 		}
 		if ev.Name == "pkg1" && ev.Ph == "X" {
