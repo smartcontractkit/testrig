@@ -63,3 +63,15 @@ testrig diagnose --iterations 10 \
 ### Native Go
 
 You can import `testrig` as a Go package and define your hooks and defaults entirely in Go! See [the pkg.go.dev docs](https://pkg.go.dev/github.com/smartcontractkit/testrig#pkg-examples) for an example setup.
+
+#### Multi-module repositories
+
+Import `github.com/smartcontractkit/testrig/modresolve` when you need to run
+`go test` or `go list` from a submodule directory:
+
+```go
+moduleDir, patterns, err := modresolve.ResolvePatterns(repoRoot, []string{"./deployment/..."})
+// moduleDir = "<repo>/deployment", patterns = []string{"./..."}
+```
+
+For full `go test` argument slices (flags + patterns), use `ResolveArgs`.

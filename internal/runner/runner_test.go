@@ -28,7 +28,7 @@ var diagnoseResultsDirNameAt = time.Date(2024, 6, 1, 12, 30, 45, 0, time.UTC)
 // Ctrl+C'ing a long-running diagnose run.
 func TestDiagnoseCanceledCtxRunsNoIterationsButStillWritesReport(t *testing.T) {
 	t.Parallel()
-	repoRoot := t.TempDir()
+	repoRoot := makeTestRepoRoot(t)
 	conf := &config.App{
 		RepoRoot:   repoRoot,
 		AIOutput:   true,
@@ -72,7 +72,7 @@ func TestDiagnoseCanceledCtxRunsNoIterationsButStillWritesReport(t *testing.T) {
 
 func TestDiagnoseCanceledCtxAIStdoutCompleteEvent(t *testing.T) {
 	t.Parallel()
-	repoRoot := t.TempDir()
+	repoRoot := makeTestRepoRoot(t)
 	conf := &config.App{
 		RepoRoot:   repoRoot,
 		AIOutput:   true,
@@ -106,7 +106,7 @@ func TestDiagnoseCanceledCtxAIStdoutCompleteEvent(t *testing.T) {
 
 func TestDiagnoseHumanModeFooterShowsReportJSONPath(t *testing.T) {
 	t.Parallel()
-	repoRoot := t.TempDir()
+	repoRoot := makeTestRepoRoot(t)
 	conf := &config.App{
 		RepoRoot:   repoRoot,
 		AIOutput:   false,
@@ -531,7 +531,7 @@ func TestBuildDiagnoseArgs(t *testing.T) {
 
 func TestDiagnoseShuffleSeedsAbsentWhenNoIterationsRun(t *testing.T) {
 	t.Parallel()
-	repoRoot := t.TempDir()
+	repoRoot := makeTestRepoRoot(t)
 	conf := &config.App{
 		RepoRoot:   repoRoot,
 		AIOutput:   true,
@@ -638,7 +638,7 @@ func TestDiagnoseResultsDirNameLongRunAndPath(t *testing.T) {
 func TestMakeDiagnoseResultsDirAvoidsExistingDirectory(t *testing.T) {
 	t.Parallel()
 	conf := &config.App{
-		RepoRoot:   t.TempDir(),
+		RepoRoot:   makeTestRepoRoot(t),
 		Iterations: 1,
 	}
 	first, err := makeDiagnoseResultsDir(conf, []string{"./pkg"}, diagnoseResultsDirNameAt)
@@ -654,7 +654,7 @@ func TestMakeDiagnoseResultsDirAvoidsExistingDirectory(t *testing.T) {
 func TestRunDiagnoseIterationsDumpDBSkippedWhenCancelled(t *testing.T) {
 	t.Parallel()
 	conf := &config.App{
-		RepoRoot:           t.TempDir(),
+		RepoRoot:           makeTestRepoRoot(t),
 		AIOutput:           true,
 		Iterations:         2,
 		ParallelIterations: 1,
@@ -721,23 +721,9 @@ func TestTruncateUTF8MaxBytes(t *testing.T) {
 	assert.Equal(t, "abc\uFFFD", truncateUTF8MaxBytes("abc\uFFFD"+"x", 6))
 }
 
-func TestPackagePatternsFromEnd(t *testing.T) {
-	t.Parallel()
-	assert.Equal(
-		t,
-		[]string{"./core/...", "./foo"},
-		packagePatternsFromEnd([]string{"-race", "-timeout=5m", "./core/...", "./foo"}),
-	)
-	assert.Nil(t, packagePatternsFromEnd([]string{"-v", "-race"}))
-	assert.Equal(t, []string{"./core/..."}, packagePatternsFromEnd([]string{"-timeout", "10m", "./core/..."}))
-	assert.Nil(t, packagePatternsFromEnd([]string{"-timeout", "10m"}))
-	assert.Equal(t, []string{"./pkg"}, packagePatternsFromEnd([]string{"./pkg", "-run", "TestName"}))
-	assert.Equal(t, []string{"./pkg"}, packagePatternsFromEnd([]string{"-run", "TestName", "./pkg"}))
-}
-
 func TestRunDiagnoseIterationsRunsInParallelWithWorkerIsolation(t *testing.T) {
 	t.Parallel()
-	repoRoot := t.TempDir()
+	repoRoot := makeTestRepoRoot(t)
 	resultsDir := t.TempDir()
 	conf := &config.App{
 		RepoRoot:           repoRoot,
@@ -836,7 +822,7 @@ func TestRunDiagnoseIterationsFailFastCancelsNewWork(t *testing.T) {
 	t.Parallel()
 	resultsDir := t.TempDir()
 	conf := &config.App{
-		RepoRoot:           t.TempDir(),
+		RepoRoot:           makeTestRepoRoot(t),
 		AIOutput:           true,
 		Iterations:         5,
 		ParallelIterations: 2,
@@ -902,7 +888,7 @@ func TestRunDiagnoseIterationsStopsOnBuildFailure(t *testing.T) {
 			t.Parallel()
 			resultsDir := t.TempDir()
 			conf := &config.App{
-				RepoRoot:   t.TempDir(),
+				RepoRoot:   makeTestRepoRoot(t),
 				AIOutput:   true,
 				Iterations: 5,
 				// Build failure stops even without --fail-fast or --fail-fast-on.
@@ -953,7 +939,7 @@ func TestRunDiagnoseIterations_serialLiveProgressMutex_noMergedProgressAndTableL
 
 	resultsDir := t.TempDir()
 	conf := &config.App{
-		RepoRoot:           t.TempDir(),
+		RepoRoot:           makeTestRepoRoot(t),
 		AIOutput:           false,
 		Iterations:         60,
 		ParallelIterations: 1,
@@ -1091,7 +1077,7 @@ func TestRunDiagnoseIterationsFailFastOnCategories(t *testing.T) {
 			t.Parallel()
 			resultsDir := t.TempDir()
 			conf := &config.App{
-				RepoRoot:      t.TempDir(),
+				RepoRoot:      makeTestRepoRoot(t),
 				AIOutput:      true,
 				Iterations:    3,
 				SlowThreshold: 30 * time.Second,
@@ -1225,7 +1211,7 @@ func TestDiagnoseBuildErrorStopsWithoutAnalysis(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			repoRoot := t.TempDir()
+			repoRoot := makeTestRepoRoot(t)
 			conf := &config.App{
 				RepoRoot:   repoRoot,
 				AIOutput:   tc.aiOutput,
@@ -1277,7 +1263,7 @@ func TestRunDiagnoseIterationsCallsIterationHooks(t *testing.T) {
 	t.Parallel()
 	resultsDir := t.TempDir()
 	conf := &config.App{
-		RepoRoot:           t.TempDir(),
+		RepoRoot:           makeTestRepoRoot(t),
 		AIOutput:           true,
 		Iterations:         3,
 		ParallelIterations: 1,
@@ -1314,4 +1300,11 @@ func TestRunDiagnoseIterationsCallsIterationHooks(t *testing.T) {
 	assert.Equal(t, int32(3), setupCalls.Load(), "setup called once per iteration")
 	assert.Equal(t, int32(3), teardownCalls.Load(), "teardown called once per iteration")
 	assert.True(t, setupBeforeTeardown.Load(), "setup must be called before teardown")
+}
+
+func makeTestRepoRoot(t *testing.T) string {
+	d := t.TempDir()
+	err := os.WriteFile(filepath.Join(d, "go.mod"), []byte("module test\n"), 0600)
+	require.NoError(t, err)
+	return d
 }

@@ -19,6 +19,7 @@ import (
 
 	"github.com/smartcontractkit/testrig/internal/config"
 	"github.com/smartcontractkit/testrig/internal/output"
+	"github.com/smartcontractkit/testrig/modresolve"
 )
 
 const (
@@ -410,13 +411,13 @@ func TestOverheadMatrixRuns(t *testing.T) {
 	require.Equal(t, overheadMatrixRunsDefault, overheadMatrixRuns())
 }
 
-func BenchmarkResolveModuleDir(b *testing.B) {
+func BenchmarkResolveArgs(b *testing.B) {
 	repoRoot, err := filepath.Abs("../..")
 	require.NoError(b, err)
 	args := []string{"./internal/runner/..."}
 
 	for b.Loop() {
-		_, _, err := resolveModuleDir(repoRoot, args)
+		_, _, err := modresolve.ResolveArgs(repoRoot, args)
 		require.NoError(b, err)
 	}
 }
