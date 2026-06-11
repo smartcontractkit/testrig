@@ -4,6 +4,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/smartcontractkit/testrig/modresolve"
 )
 
 const (
@@ -14,7 +16,7 @@ const (
 // parseGoTestRunPattern returns the last `-run` pattern from go test-style argv
 // (before `-args`), mirroring how Go applies repeated `-run` flags.
 func parseGoTestRunPattern(goTestArgs []string) string {
-	args := goTestFlagsBeforeArgs(goTestArgs)
+	args := modresolve.GoTestFlagsBeforeArgs(goTestArgs)
 	var last string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -88,7 +90,7 @@ func sanitizeDirToken(s string) string {
 // guessPackagePatternForSlug picks a human-readable slug from go test arguments
 // (trailing package patterns). Falls back to "pkgs" if none found.
 func guessPackagePatternForSlug(goTestArgs []string) string {
-	pkgs := packagePatternsFromEnd(goTestArgs)
+	pkgs := modresolve.PackagePatternsFromEnd(goTestArgs)
 	switch len(pkgs) {
 	case 0:
 		return "pkgs"

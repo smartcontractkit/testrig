@@ -22,6 +22,7 @@ import (
 	"github.com/smartcontractkit/testrig/internal/hooks"
 	"github.com/smartcontractkit/testrig/internal/output"
 	"github.com/smartcontractkit/testrig/internal/termstyle"
+	"github.com/smartcontractkit/testrig/modresolve"
 )
 
 // failFastReasonBuildFailure is used when go test reports a compile/build failure
@@ -65,7 +66,7 @@ type diagnoseRunState struct {
 }
 
 func runCommand(ctx context.Context, conf *config.App, binary string, args []string, env []string) error {
-	dir, args, err := resolveModuleDir(conf.RepoRoot, args)
+	dir, args, err := modresolve.ResolveArgs(conf.RepoRoot, args)
 	if err != nil {
 		return err
 	}
@@ -410,7 +411,7 @@ func runDiagnoseIterations(
 		hooks.runIteration = diagnoseIteration
 	}
 
-	moduleDir, adjustedArgs, err := resolveModuleDir(conf.RepoRoot, goTestArgs)
+	moduleDir, adjustedArgs, err := modresolve.ResolveArgs(conf.RepoRoot, goTestArgs)
 	if err != nil {
 		return diagnoseRunState{}, err
 	}
@@ -683,23 +684,12 @@ func failFastDigestMatch(d IterationDigest, categories []string) (bool, string) 
 	return false, ""
 }
 
-// goTestFlagsBeforeArgs returns the portion of argv that belongs to `go test`
-// itself, stopping before -args (flags after -args are passed to the test binary).
-func goTestFlagsBeforeArgs(args []string) []string {
-	for i, a := range args {
-		if a == "-args" {
-			return args[:i]
-		}
-	}
-	return args
-}
-
 // findLastFlagValue returns the last value of -flag (forms "-flag=val" and
 // "-flag val") within the go test flag section (before -args). set is false
 // when the flag does not appear. An error is returned only for "-flag" with no
 // following token.
 func findLastFlagValue(goTestArgs []string, flag string) (raw string, set bool, err error) {
-	args := goTestFlagsBeforeArgs(goTestArgs)
+	args := modresolve.GoTestFlagsBeforeArgs(goTestArgs)
 	prefix := flag + "="
 	for i := 0; i < len(args); i++ {
 		a := args[i]
