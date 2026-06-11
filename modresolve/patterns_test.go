@@ -70,4 +70,12 @@ func TestPackagePatternsFromEnd(t *testing.T) {
 		[]string{"./pkg"},
 		modresolve.PackagePatternsFromEnd([]string{"./pkg", "-count", "1"}),
 	)
+	assert.Equal(t,
+		[]string{"github.com/foo/bar/..."},
+		modresolve.PackagePatternsFromEnd([]string{"-v", "github.com/foo/bar/..."}),
+	)
+	assert.Equal(t,
+		[]string{"./pkg"},
+		modresolve.PackagePatternsFromEnd([]string{"./pkg", "-run", "TestName", "-count=1"}),
+	)
 }

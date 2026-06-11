@@ -3,6 +3,7 @@ package modresolve_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -86,6 +87,12 @@ func TestResolveArgs(t *testing.T) {
 			wantDir:    filepath.Join(root, "deployment"),
 			wantArgs:   []string{"./ccip"},
 		},
+		{
+			name:       "import path only stays at repo root",
+			goTestArgs: []string{"-v", "github.com/smartcontractkit/chainlink/deployment/..."},
+			wantDir:    root,
+			wantArgs:   []string{"-v", "github.com/smartcontractkit/chainlink/deployment/..."},
+		},
 	}
 
 	for _, tc := range tests {
@@ -138,6 +145,12 @@ func TestResolvePatterns(t *testing.T) {
 			patterns: []string{"./core/...", "./deployment/..."},
 			wantErr:  true,
 		},
+		{
+			name:     "import path only stays at repo root",
+			patterns: []string{"github.com/smartcontractkit/chainlink/deployment/..."},
+			wantDir:  root,
+			wantPats: []string{"github.com/smartcontractkit/chainlink/deployment/..."},
+		},
 	}
 
 	for _, tc := range tests {
@@ -181,5 +194,46 @@ func TestNearestModuleRoot(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.wantDir, got)
 		})
+	}
+}
+
+func TestNearestModuleRootNoGoMod(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "core"), 0700))
+
+	_, err := modresolve.NearestModuleRoot(filepath.Join(root, "core"), root)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no go.mod found")
+}
+
+func TestResolveArgsNoGoMod(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	_, _, err := modresolve.ResolveArgs(root, []string{"./core/..."})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no go.mod found")
+}
+
+func TestResolvePatternsNoGoMod(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	_, _, err := modresolve.ResolvePatterns(root, []string{"./core/..."})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no go.mod found")
+}
+
+func TestResolveArgsRewrittenPatternsUseForwardSlashes(t *testing.T) {
+	t.Parallel()
+	root := makeTestRepo(t)
+
+	_, args, err := modresolve.ResolveArgs(root, []string{"./deployment/ccip/..."})
+	require.NoError(t, err)
+	for _, arg := range args {
+		if strings.Contains(arg, "/") || strings.HasPrefix(arg, "./") {
+			require.NotContains(t, arg, `\`, "pattern %q should use forward slashes", arg)
+		}
 	}
 }
