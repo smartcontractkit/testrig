@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/buger/jsonparser"
 
 	"github.com/smartcontractkit/testrig/internal/termstyle"
 )
@@ -28,15 +29,41 @@ const maxDiagnoseLogFilenameBytes = 240
 // -timeout fires. It may be attached to a running test or to the package.
 const timeoutPanic = "panic: test timed out"
 
-// TestEvent mirrors cmd/internal/test2json's TestEvent; only fields we need.
+// TestEvent represents a parsed test event from the JSONL log stream.
 type TestEvent struct {
-	Time        time.Time `json:"Time"`
-	Action      string    `json:"Action"`
-	Package     string    `json:"Package"`
-	Test        string    `json:"Test"`
-	Elapsed     float64   `json:"Elapsed"`
-	Output      string    `json:"Output"`
-	FailedBuild string    `json:"FailedBuild,omitempty"`
+	Time        time.Time
+	Action      string
+	Package     string
+	Test        string
+	Elapsed     float64
+	Output      string
+	FailedBuild string
+}
+
+// stringInterner deduplicates identical strings during JSON log parsing.
+// Test logs often contain millions of events with highly repetitive fields
+// like Package and Test names. By interning these byte slices into shared string
+// references, we significantly reduce memory allocations and prevent OOM errors
+// when analyzing very large test suites.
+type stringInterner struct {
+	m map[string]string
+}
+
+func newStringInterner() *stringInterner {
+	return &stringInterner{m: make(map[string]string)}
+}
+
+func (i *stringInterner) intern(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	s, ok := i.m[string(b)]
+	if ok {
+		return s
+	}
+	s = string(b)
+	i.m[s] = s
+	return s
 }
 
 // iterationScanMeta collects signals during scan that are not represented in aggregates only.
@@ -50,18 +77,19 @@ type testKey struct {
 }
 
 type aggregate struct {
-	passes        int
-	fails         int
-	skips         int
-	maxElapsed    time.Duration
-	timedOut      bool
-	iterations    map[int]struct{}
-	failedIters   map[int]bool
-	timeoutIters  map[int]bool
-	skipIters     map[int]bool
-	outputs       map[int]*strings.Builder
-	elapseds      []time.Duration
-	elapsedByIter map[int]time.Duration
+	passes       int
+	fails        int
+	skips        int
+	maxElapsed   time.Duration
+	timedOut     bool
+	lastRunIter  int
+	runs         int
+	failedIters  []int
+	timeoutIters []int
+	skipIters    []int
+	slowIters    []int
+	outputs      map[int]*strings.Builder
+	elapseds     []time.Duration
 }
 
 // ProblemLog points to log files for iterations where this entry actually had
@@ -218,8 +246,9 @@ var readerPool = sync.Pool{
 // Malformed lines are silently skipped (go test can interleave non-JSON).
 func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogMap, error) {
 	aggs := make(map[testKey]*aggregate)
+	interner := newStringInterner()
 	for i, r := range iterations {
-		if err := scanIterationJSONL(r, i, aggs, nil, slowThreshold); err != nil {
+		if err := scanIterationJSONL(r, i, aggs, nil, slowThreshold, interner); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -230,21 +259,66 @@ func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogM
 
 func newAggregate() *aggregate {
 	return &aggregate{
-		iterations:    map[int]struct{}{},
-		failedIters:   map[int]bool{},
-		timeoutIters:  map[int]bool{},
-		skipIters:     map[int]bool{},
-		outputs:       map[int]*strings.Builder{},
-		elapsedByIter: map[int]time.Duration{},
+		lastRunIter: -1,
+		outputs:     map[int]*strings.Builder{},
 	}
 }
 
-func (a *aggregate) recordElapsed(iterIdx int, d time.Duration) {
+func (a *aggregate) recordElapsed(d time.Duration) {
 	a.elapseds = append(a.elapseds, d)
-	a.elapsedByIter[iterIdx] = d
 	if d > a.maxElapsed {
 		a.maxElapsed = d
 	}
+}
+
+// parseTestEvent parses a single JSONL test event into ev. If interner is not nil,
+// it deduplicates Action, Package, and Test strings.
+func parseTestEvent(line []byte, ev *TestEvent, interner *stringInterner) error {
+	return jsonparser.ObjectEach(
+		line,
+		func(key []byte, value []byte, dataType jsonparser.ValueType, _ int) error {
+			switch string(key) {
+			case "Time":
+				if dataType == jsonparser.String {
+					s, _ := jsonparser.ParseString(value)
+					ev.Time, _ = time.Parse(time.RFC3339Nano, s)
+				}
+			case "Action":
+				if interner != nil {
+					ev.Action = interner.intern(value)
+				} else if dataType == jsonparser.String {
+					ev.Action, _ = jsonparser.ParseString(value)
+				}
+			case "Package":
+				if interner != nil {
+					ev.Package = interner.intern(value)
+				} else if dataType == jsonparser.String {
+					ev.Package, _ = jsonparser.ParseString(value)
+				}
+			case "Test":
+				if interner != nil {
+					ev.Test = interner.intern(value)
+				} else if dataType == jsonparser.String {
+					ev.Test, _ = jsonparser.ParseString(value)
+				}
+			case "Elapsed":
+				if dataType == jsonparser.Number {
+					ev.Elapsed, _ = jsonparser.ParseFloat(value)
+				}
+			case "Output":
+				if dataType == jsonparser.String {
+					s, _ := jsonparser.ParseString(value)
+					ev.Output = s
+				}
+			case "FailedBuild":
+				if dataType == jsonparser.String {
+					s, _ := jsonparser.ParseString(value)
+					ev.FailedBuild = s
+				}
+			}
+			return nil
+		},
+	)
 }
 
 // scanIterationJSONL merges one iteration's JSONL stream into aggs at iterIdx.
@@ -255,6 +329,7 @@ func scanIterationJSONL(
 	aggs map[testKey]*aggregate,
 	meta *iterationScanMeta,
 	slowThreshold time.Duration,
+	interner *stringInterner,
 ) error {
 	reader := readerPool.Get().(*bufio.Reader)
 	reader.Reset(r)
@@ -273,7 +348,8 @@ func scanIterationJSONL(
 
 		if len(line) > 0 && line[0] == '{' {
 			var ev TestEvent
-			if json.Unmarshal(line, &ev) == nil {
+			err := parseTestEvent(line, &ev, interner)
+			if err == nil {
 				applyTestEvent(aggs, iterIdx, &ev, meta, slowThreshold)
 			}
 		}
@@ -300,12 +376,22 @@ func applyTestEvent(
 		a = newAggregate()
 		aggs[key] = a
 	}
+
+	if a.lastRunIter != iterIdx && ev.Action != "output" {
+		a.runs++
+		a.lastRunIter = iterIdx
+	}
+
 	switch ev.Action {
 	case "pass":
 		a.passes++
-		a.iterations[iterIdx] = struct{}{}
 		el := seconds(ev.Elapsed)
-		a.recordElapsed(iterIdx, el)
+		a.recordElapsed(el)
+		if slowThreshold > 0 && el > slowThreshold {
+			if len(a.slowIters) == 0 || a.slowIters[len(a.slowIters)-1] != iterIdx {
+				a.slowIters = append(a.slowIters, iterIdx)
+			}
+		}
 		if !a.timedOut && (slowThreshold == 0 || el <= slowThreshold) {
 			delete(a.outputs, iterIdx)
 		}
@@ -314,23 +400,26 @@ func applyTestEvent(
 			meta.sawFailedBuild = true
 		}
 		a.fails++
-		a.iterations[iterIdx] = struct{}{}
-		a.failedIters[iterIdx] = true
-		a.recordElapsed(iterIdx, seconds(ev.Elapsed))
+		if len(a.failedIters) == 0 || a.failedIters[len(a.failedIters)-1] != iterIdx {
+			a.failedIters = append(a.failedIters, iterIdx)
+		}
+		a.recordElapsed(seconds(ev.Elapsed))
 	case "skip":
 		a.skips++
-		a.iterations[iterIdx] = struct{}{}
-		a.skipIters[iterIdx] = true
+		if len(a.skipIters) == 0 || a.skipIters[len(a.skipIters)-1] != iterIdx {
+			a.skipIters = append(a.skipIters, iterIdx)
+		}
 		el := seconds(ev.Elapsed)
-		a.recordElapsed(iterIdx, el)
+		a.recordElapsed(el)
 		if !a.timedOut {
 			delete(a.outputs, iterIdx)
 		}
 	case "output":
 		if strings.Contains(ev.Output, timeoutPanic) {
 			a.timedOut = true
-			a.iterations[iterIdx] = struct{}{}
-			a.timeoutIters[iterIdx] = true
+			if len(a.timeoutIters) == 0 || a.timeoutIters[len(a.timeoutIters)-1] != iterIdx {
+				a.timeoutIters = append(a.timeoutIters, iterIdx)
+			}
 		}
 		buf := a.outputs[iterIdx]
 		if buf == nil {
@@ -342,8 +431,6 @@ func applyTestEvent(
 }
 
 // buildReportFromAggs produces Report and LogMap from merged aggregates (after reattributeTimeouts).
-//
-//nolint:gocyclo
 func buildReportFromAggs(
 	aggs map[testKey]*aggregate,
 	numIterations int,
@@ -354,12 +441,42 @@ func buildReportFromAggs(
 		SlowThreshold: slowThreshold,
 	}
 
+	pkgEntries, testsByPkg := categorizeAggregates(aggs, slowThreshold, rep)
+
+	pkgNames := make([]string, 0, len(testsByPkg))
+	for pkgName := range testsByPkg {
+		pkgNames = append(pkgNames, pkgName)
+	}
+	sort.Strings(pkgNames)
+	for _, pkgName := range pkgNames {
+		rep.Slow = append(rep.Slow, testsByPkg[pkgName]...)
+	}
+
+	rep.SlowestPackages = computeSlowestPackages(pkgEntries, slowThreshold)
+
+	sortEntries(rep.Flakes)
+	sortEntries(rep.Failures)
+	sortEntries(rep.Timeouts)
+	sortEntries(rep.Slow)
+
+	rep.IterationSummaries = buildIterationSummaries(aggs, numIterations)
+	rep.Summary = buildReportSummary(rep, aggs, slowThreshold)
+
+	logs := buildLogMap(aggs)
+	return rep, logs
+}
+
+func categorizeAggregates(
+	aggs map[testKey]*aggregate,
+	slowThreshold time.Duration,
+	rep *Report,
+) ([]TestEntry, map[string][]TestEntry) {
 	var pkgEntries []TestEntry
 	var testsByPkg = make(map[string][]TestEntry)
 
 	for key, a := range aggs {
 		minE, p50 := stats(a.elapseds)
-		runs := len(a.iterations)
+		runs := a.runs
 		ciLo, ciHi := WilsonScoreInterval(a.fails, runs, 0)
 		base := TestEntry{
 			Package:       key.Package,
@@ -374,9 +491,9 @@ func buildReportFromAggs(
 			MinElapsed:    minE,
 			MaxElapsed:    a.maxElapsed,
 			P50Elapsed:    p50,
-			FailIters:     sortedBoolMapKeys(a.failedIters),
-			TimeoutIters:  sortedBoolMapKeys(a.timeoutIters),
-			SlowIters:     slowIterations(a.elapsedByIter, slowThreshold),
+			FailIters:     a.failedIters,
+			TimeoutIters:  a.timeoutIters,
+			SlowIters:     a.slowIters,
 		}
 		if key.Test == "" {
 			pkgEntries = append(pkgEntries, base)
@@ -404,38 +521,32 @@ func buildReportFromAggs(
 			testsByPkg[key.Package] = append(testsByPkg[key.Package], base)
 		}
 	}
+	return pkgEntries, testsByPkg
+}
 
-	pkgNames := make([]string, 0, len(testsByPkg))
-	for pkgName := range testsByPkg {
-		pkgNames = append(pkgNames, pkgName)
+func computeSlowestPackages(pkgEntries []TestEntry, slowThreshold time.Duration) []TestEntry {
+	if slowThreshold <= 0 {
+		return nil
 	}
-	sort.Strings(pkgNames)
-	for _, pkgName := range pkgNames {
-		rep.Slow = append(rep.Slow, testsByPkg[pkgName]...)
-	}
-
-	if slowThreshold > 0 {
-		slices.SortFunc(pkgEntries, func(a, b TestEntry) int {
-			return cmp.Or(
-				cmp.Compare(b.MaxElapsed, a.MaxElapsed),
-				strings.Compare(a.Package, b.Package),
-			)
-		})
-		for _, pkg := range pkgEntries {
-			if pkg.MaxElapsed >= slowThreshold && !pkgAggregateExcludedFromSlowReports(pkg) {
-				rep.SlowestPackages = append(rep.SlowestPackages, pkg)
-				if len(rep.SlowestPackages) >= 10 {
-					break
-				}
+	slices.SortFunc(pkgEntries, func(a, b TestEntry) int {
+		return cmp.Or(
+			cmp.Compare(b.MaxElapsed, a.MaxElapsed),
+			strings.Compare(a.Package, b.Package),
+		)
+	})
+	var slowest []TestEntry
+	for _, pkg := range pkgEntries {
+		if pkg.MaxElapsed >= slowThreshold && !pkgAggregateExcludedFromSlowReports(pkg) {
+			slowest = append(slowest, pkg)
+			if len(slowest) >= 10 {
+				break
 			}
 		}
 	}
+	return slowest
+}
 
-	sortEntries(rep.Flakes)
-	sortEntries(rep.Failures)
-	sortEntries(rep.Timeouts)
-	sortEntries(rep.Slow)
-
+func buildIterationSummaries(aggs map[testKey]*aggregate, numIterations int) []IterationSummary {
 	iterFails := make(map[int][]string, numIterations)
 	iterTimedOut := make(map[int]bool, numIterations)
 	iterPkgHasTestFail := make(map[int]map[string]bool, numIterations)
@@ -443,7 +554,7 @@ func buildReportFromAggs(
 		if key.Test == "" {
 			continue
 		}
-		for i := range a.failedIters {
+		for _, i := range a.failedIters {
 			if iterPkgHasTestFail[i] == nil {
 				iterPkgHasTestFail[i] = make(map[string]bool)
 			}
@@ -451,14 +562,14 @@ func buildReportFromAggs(
 		}
 	}
 	for key, a := range aggs {
-		for i := range a.timeoutIters {
+		for _, i := range a.timeoutIters {
 			iterTimedOut[i] = true
 		}
 		failName := key.Test
 		if failName == "" {
 			failName = key.Package
 		}
-		for i := range a.failedIters {
+		for _, i := range a.failedIters {
 			if key.Test == "" && iterPkgHasTestFail[i][key.Package] {
 				continue
 			}
@@ -480,12 +591,7 @@ func buildReportFromAggs(
 		}
 		summaries[i] = s
 	}
-	rep.IterationSummaries = summaries
-
-	rep.Summary = buildReportSummary(rep, aggs, slowThreshold)
-
-	logs := buildLogMap(aggs)
-	return rep, logs
+	return summaries
 }
 
 func buildReportSummary(rep *Report, aggs map[testKey]*aggregate, slowThreshold time.Duration) *ReportSummary {
@@ -569,7 +675,7 @@ func countNamedTestsRanInAggs(aggs map[testKey]*aggregate) int {
 		if k.Test == "" {
 			continue
 		}
-		if len(a.iterations) == 0 || aggregateSkipOnly(a) {
+		if a.runs == 0 || aggregateSkipOnly(a) {
 			continue
 		}
 		n++
@@ -600,7 +706,8 @@ func countNamedTestsSkippedInAggs(aggs map[testKey]*aggregate) int {
 func DigestIterationJSONL(r io.Reader, slowThreshold time.Duration) (IterationDigest, error) {
 	aggs := make(map[testKey]*aggregate)
 	var meta iterationScanMeta
-	if err := scanIterationJSONL(r, 0, aggs, &meta, slowThreshold); err != nil {
+	interner := newStringInterner()
+	if err := scanIterationJSONL(r, 0, aggs, &meta, slowThreshold, interner); err != nil {
 		return IterationDigest{}, err
 	}
 	reattributeTimeouts(aggs, newAggregate)
@@ -641,22 +748,23 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 	sort.Slice(matches, func(i, j int) bool {
 		return iterNumber(matches[i]) < iterNumber(matches[j])
 	})
-	readers := make([]io.Reader, 0, len(matches))
-	files := make([]*os.File, 0, len(matches))
-	defer func() {
-		for _, f := range files {
-			_ = f.Close()
-		}
-	}()
-	for _, p := range matches {
-		f, err := os.Open(p) //nolint:gosec // G304: path from filepath.Glob
-		if err != nil {
+	aggs := make(map[testKey]*aggregate)
+	interner := newStringInterner()
+	for i, p := range matches {
+		if err := func() error {
+			f, err := os.Open(p) //nolint:gosec // G304: path from filepath.Glob
+			if err != nil {
+				return err
+			}
+			defer func() { _ = f.Close() }()
+			return scanIterationJSONL(f, i, aggs, nil, slowThreshold, interner)
+		}(); err != nil {
 			return nil, nil, err
 		}
-		files = append(files, f)
-		readers = append(readers, f)
 	}
-	return Analyze(readers, slowThreshold)
+	reattributeTimeouts(aggs, newAggregate)
+	rep, logs := buildReportFromAggs(aggs, len(matches), slowThreshold)
+	return rep, logs, nil
 }
 
 // WriteReport writes the report as pretty JSON to <resultsDir>/report.json.
@@ -1093,22 +1201,22 @@ func reattributeTimeouts(aggs map[testKey]*aggregate, newAgg func() *aggregate) 
 		if !a.timedOut {
 			continue
 		}
-		for i := range a.timeoutIters {
+		var keptTimeouts []int
+		for _, i := range a.timeoutIters {
 			buf := a.outputs[i]
 			if buf == nil {
+				keptTimeouts = append(keptTimeouts, i)
 				continue
 			}
 			output := buf.String()
 			names := parseRunningTests(output)
 			if len(names) == 0 {
+				keptTimeouts = append(keptTimeouts, i)
 				continue
 			}
 			if slices.Contains(names, key.Test) {
+				keptTimeouts = append(keptTimeouts, i)
 				continue
-			}
-			delete(a.timeoutIters, i)
-			if len(a.timeoutIters) == 0 {
-				a.timedOut = false
 			}
 			for _, name := range names {
 				nk := testKey{Package: key.Package, Test: name}
@@ -1118,13 +1226,22 @@ func reattributeTimeouts(aggs map[testKey]*aggregate, newAgg func() *aggregate) 
 					aggs[nk] = na
 				}
 				na.timedOut = true
-				na.timeoutIters[i] = true
-				na.iterations[i] = struct{}{}
+				if len(na.timeoutIters) == 0 || na.timeoutIters[len(na.timeoutIters)-1] != i {
+					na.timeoutIters = append(na.timeoutIters, i)
+				}
+				if na.lastRunIter != i {
+					na.runs++
+					na.lastRunIter = i
+				}
 				if na.outputs[i] == nil {
 					na.outputs[i] = &strings.Builder{}
 				}
 				_, _ = na.outputs[i].WriteString(output)
 			}
+		}
+		a.timeoutIters = keptTimeouts
+		if len(a.timeoutIters) == 0 {
+			a.timedOut = false
 		}
 	}
 }
@@ -1191,15 +1308,6 @@ func buildLogMap(aggs map[testKey]*aggregate) LogMap {
 	return out
 }
 
-func sortedBoolMapKeys(m map[int]bool) []int {
-	keys := make([]int, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-	return keys
-}
-
 // pkgAggregateExcludedFromSlowReports is true for package-level aggregates that
 // belong only in Failures or Timeouts, not in rep.SlowestPackages ranking.
 func pkgAggregateExcludedFromSlowReports(e TestEntry) bool {
@@ -1213,20 +1321,6 @@ func pkgAggregateExcludedFromSlowReports(e TestEntry) bool {
 		return true
 	}
 	return false
-}
-
-func slowIterations(elapsedByIter map[int]time.Duration, threshold time.Duration) []int {
-	if threshold <= 0 {
-		return nil
-	}
-	var iters []int
-	for iter, elapsed := range elapsedByIter {
-		if elapsed > threshold {
-			iters = append(iters, iter)
-		}
-	}
-	sort.Ints(iters)
-	return iters
 }
 
 // sortedDurationStats returns min, max, and median (p50) from wall-clock or elapsed samples.

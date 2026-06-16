@@ -18,10 +18,29 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/smartcontractkit/testrig/internal/config"
+	"github.com/smartcontractkit/testrig/internal/hooks"
 	"github.com/smartcontractkit/testrig/internal/output"
 )
 
 var diagnoseResultsDirNameAt = time.Date(2024, 6, 1, 12, 30, 45, 0, time.UTC)
+
+// Diagnose is a helper for tests to run the full split flow
+func Diagnose(
+	ctx context.Context,
+	conf *config.App,
+	out *output.Printer,
+	goTestArgs []string,
+	resources []hooks.Resource,
+	iterSetup, iterTeardown func(context.Context) error,
+) error {
+	state, start, resultsDir, err := RunIterations(ctx, conf, out, goTestArgs, resources, iterSetup, iterTeardown)
+	if err != nil {
+		if ctx.Err() == nil {
+			return err
+		}
+	}
+	return FinishDiagnoseAnalysis(ctx, conf, out, goTestArgs, state, start, resultsDir)
+}
 
 // When ctx is already canceled before Diagnose starts, no iterations run but
 // analysis still produces a report.json — this is the path a user hits after
@@ -164,6 +183,9 @@ func TestStartDiagnoseAnalyzingProgress_afterLiveProgress_clearsWrappedInline(t 
 
 func TestStartDiagnoseAnalyzingProgress_liveInline_updatesDuration(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping memory test in short mode")
+	}
 	var stderr strings.Builder
 	out := output.NewForTest(false, io.Discard, &stderr, true)
 
@@ -933,6 +955,9 @@ func TestRunDiagnoseIterationsStopsOnBuildFailure(t *testing.T) {
 // Without a shared mutex, scheduling can merge progress and digest on one line.
 func TestRunDiagnoseIterations_serialLiveProgressMutex_noMergedProgressAndTableLines(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping test in short mode")
+	}
 	var stderr strings.Builder
 	out := output.NewForTest(false, io.Discard, &stderr, true)
 	require.True(t, out.LiveInlineProgress())

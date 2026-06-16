@@ -88,14 +88,31 @@ func (ts *testState) getOutput() string {
 }
 
 // parseTraceEvents parses a go test -json stream for a single iteration and returns trace events.
-//
-//nolint:gocyclo // Parses a complex JSON stream and allocates threads.
 func parseTraceEvents(
 	r io.Reader,
 	iter int,
 	out *output.Printer,
 	pkgIndexes map[string]int,
 ) ([]TraceEvent, error) {
+	states, lastSeenTime, uniquePackages, err := scanTraceEvents(r, iter, out)
+	if err != nil {
+		return nil, err
+	}
+
+	allTests, pkgHasRunTests := prepareTestStates(states, lastSeenTime)
+	orderPackages(allTests, uniquePackages, pkgHasRunTests, pkgIndexes)
+
+	events, pkgThreads := generateTraceEvents(allTests, pkgIndexes, iter)
+	events = appendMetadataEvents(events, uniquePackages, pkgIndexes, pkgThreads)
+
+	return events, nil
+}
+
+func scanTraceEvents(
+	r io.Reader,
+	iter int,
+	out *output.Printer,
+) (map[traceKey]*testState, time.Time, map[string]bool, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 
@@ -118,7 +135,8 @@ func parseTraceEvents(
 			continue
 		}
 		var ev TestEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
+		err := parseTestEvent(line, &ev, nil)
+		if err != nil {
 			if out != nil {
 				out.Stderrf("trace: skip malformed jsonl (iteration %d): %v\n", iter, err)
 			}
@@ -159,9 +177,12 @@ func parseTraceEvents(
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, time.Time{}, nil, err
 	}
+	return states, lastSeenTime, uniquePackages, nil
+}
 
+func prepareTestStates(states map[traceKey]*testState, lastSeenTime time.Time) ([]*testState, map[string]bool) {
 	// Handle incomplete
 	for _, ts := range states {
 		if ts.endTime.IsZero() && !ts.runTime.IsZero() && !lastSeenTime.IsZero() {
@@ -177,9 +198,6 @@ func parseTraceEvents(
 		}
 	}
 
-	var events []TraceEvent
-
-	// We need to sort tests by runTime/contTime to allocate threads properly
 	var allTests []*testState
 	for _, ts := range states {
 		if !ts.runTime.IsZero() && !ts.endTime.IsZero() {
@@ -190,7 +208,10 @@ func parseTraceEvents(
 			allTests = append(allTests, ts)
 		}
 	}
+	return allTests, pkgHasRunTests
+}
 
+func orderPackages(allTests []*testState, uniquePackages, pkgHasRunTests map[string]bool, pkgIndexes map[string]int) {
 	pkgEarliestRun := make(map[string]time.Time)
 	for _, ts := range allTests {
 		current, ok := pkgEarliestRun[ts.pkg]
@@ -214,7 +235,17 @@ func parseTraceEvents(
 			pkgIndexes[pkg] = len(pkgIndexes) + 1
 		}
 	}
+}
 
+type threadAlloc struct {
+	endTime time.Time
+}
+
+func generateTraceEvents(
+	allTests []*testState,
+	pkgIndexes map[string]int,
+	iter int,
+) ([]TraceEvent, map[string][]threadAlloc) {
 	sort.Slice(allTests, func(i, j int) bool {
 		t1 := allTests[i].contTime
 		if t1.IsZero() {
@@ -227,14 +258,11 @@ func parseTraceEvents(
 		return t1.Before(t2)
 	})
 
-	type threadAlloc struct {
-		endTime time.Time
-	}
+	var events []TraceEvent
 	pkgThreads := make(map[string][]threadAlloc)
 
 	allocSlot := func(pkg string, start, end time.Time) int {
 		threads := pkgThreads[pkg]
-
 		tid := -1
 		for i, th := range threads {
 			if !start.Before(th.endTime) {
@@ -256,18 +284,8 @@ func parseTraceEvents(
 		if !ok {
 			continue
 		}
-		cname := "terrible"
-		if !ts.incomplete {
-			switch ts.status {
-			case "pass":
-				cname = "good"
-			case "fail":
-				cname = "bad"
-			case "skip":
-				cname = "yellow"
-			}
-		}
 
+		cname := getTraceCname(ts)
 		cat := "test"
 		name := ts.name
 		if name == "" {
@@ -275,29 +293,9 @@ func parseTraceEvents(
 			cat = "package"
 		}
 
-		args := map[string]any{
-			"package":   ts.pkg,
-			"status":    ts.status,
-			"iteration": iter + 1,
-		}
-		if ts.name != "" {
-			args["test_id"] = fmt.Sprintf("%s.%s", ts.pkg, ts.name)
-		} else {
-			args["test_id"] = ts.pkg
-		}
-		if ts.isParallel {
-			args["is_parallel"] = true
-		}
-		if ts.incomplete {
-			args["incomplete"] = true
-		}
-		outStr := ts.getOutput()
-		if outStr != "" {
-			args["output"] = outStr
-		}
+		args := createTraceEventArgs(ts, iter)
 
 		if ts.isParallel && !ts.pauseTime.IsZero() && !ts.contTime.IsZero() {
-			// 1. run -> pause
 			dur1 := max(ts.pauseTime.Sub(ts.runTime).Microseconds(), 0)
 			if dur1 > 0 {
 				tid := allocSlot(ts.pkg, ts.runTime, ts.pauseTime)
@@ -314,7 +312,6 @@ func parseTraceEvents(
 				})
 			}
 
-			// 2. cont -> endTime
 			durExec := max(ts.endTime.Sub(ts.contTime).Microseconds(), 0)
 			if durExec == 0 && ts.elapsed > 0 {
 				durExec = int64(ts.elapsed * 1e6)
@@ -332,17 +329,14 @@ func parseTraceEvents(
 				Args:  args,
 			})
 		} else {
-			// Sequential or package
 			dur := max(ts.endTime.Sub(ts.runTime).Microseconds(), 0)
 			if dur == 0 && ts.elapsed > 0 {
 				dur = int64(ts.elapsed * 1e6)
 			}
-
 			tid := 0
 			if cat != "package" {
 				tid = 1 + allocSlot(ts.pkg, ts.runTime, ts.endTime)
 			}
-
 			events = append(events, TraceEvent{
 				Name:  name,
 				Cat:   cat,
@@ -356,8 +350,55 @@ func parseTraceEvents(
 			})
 		}
 	}
+	return events, pkgThreads
+}
 
-	// Append metadata events for thread names and process names
+func getTraceCname(ts *testState) string {
+	if ts.incomplete {
+		return "terrible"
+	}
+	switch ts.status {
+	case "pass":
+		return "good"
+	case "fail":
+		return "bad"
+	case "skip":
+		return "yellow"
+	default:
+		return "terrible"
+	}
+}
+
+func createTraceEventArgs(ts *testState, iter int) map[string]any {
+	args := map[string]any{
+		"package":   ts.pkg,
+		"status":    ts.status,
+		"iteration": iter + 1,
+	}
+	if ts.name != "" {
+		args["test_id"] = fmt.Sprintf("%s.%s", ts.pkg, ts.name)
+	} else {
+		args["test_id"] = ts.pkg
+	}
+	if ts.isParallel {
+		args["is_parallel"] = true
+	}
+	if ts.incomplete {
+		args["incomplete"] = true
+	}
+	outStr := ts.getOutput()
+	if outStr != "" {
+		args["output"] = outStr
+	}
+	return args
+}
+
+func appendMetadataEvents(
+	events []TraceEvent,
+	uniquePackages map[string]bool,
+	pkgIndexes map[string]int,
+	pkgThreads map[string][]threadAlloc,
+) []TraceEvent {
 	for pkg := range uniquePackages {
 		pid, ok := pkgIndexes[pkg]
 		if !ok {
@@ -409,8 +450,7 @@ func parseTraceEvents(
 			})
 		}
 	}
-
-	return events, nil
+	return events
 }
 
 // WriteTrace parses iteration logs under resultsDir and writes a separate trace-<N>.json file per iteration.

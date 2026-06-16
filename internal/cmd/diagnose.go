@@ -50,13 +50,28 @@ Do not pass go test -trace; use diagnose --trace instead. With --shuffle-seed, a
 			if err != nil {
 				return err
 			}
-			defer func() { finishResourceCleanup(cmd, &err, cleanup) }()
-
 			shell := conf.ShellCommand
 			iterSetup := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseSetup)
 			iterTeardown := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseTeardown)
 
-			return runner.Diagnose(cmd.Context(), conf, out, args, resources, iterSetup, iterTeardown)
+			state, start, resultsDir, runErr := runner.RunIterations(
+				cmd.Context(),
+				conf,
+				out,
+				args,
+				resources,
+				iterSetup,
+				iterTeardown,
+			)
+
+			finishResourceCleanup(cmd, &runErr, cleanup)
+			if runErr != nil {
+				if cmd.Context().Err() == nil {
+					return runErr
+				}
+			}
+
+			return runner.FinishDiagnoseAnalysis(cmd.Context(), conf, out, args, state, start, resultsDir)
 		}),
 	}
 
@@ -71,6 +86,8 @@ Do not pass go test -trace; use diagnose --trace instead. With --shuffle-seed, a
 		Bool("shuffle-seed", false, "randomize test order each iteration; a unique seed is generated per iteration and recorded in report.json for reproduction")
 	cmd.Flags().
 		Bool("trace", false, "visualize the test execution traces")
+
+	cmd.AddCommand(newDiagnoseAnalyzeCmd())
 
 	return cmd
 }

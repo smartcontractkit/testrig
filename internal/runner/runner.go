@@ -55,7 +55,8 @@ type diagnoseRunHooks struct {
 	iterationTeardown func(context.Context) error
 }
 
-type diagnoseRunState struct {
+// DiagnoseRunState captures the runtime progress and limits of a diagnose session.
+type DiagnoseRunState struct {
 	completed           int
 	failedFast          bool
 	failedFastReason    string
@@ -95,28 +96,23 @@ func Gotestsum(ctx context.Context, conf *config.App, args []string, env []strin
 	return runCommand(ctx, conf, "gotestsum", args, env)
 }
 
-// Diagnose runs go test -json once per iteration, writing each stream to
-// iteration-<n>.log.jsonl, then analyzes and writes report.json.
-// With --ai-output, stdout is the results directory path during the run, per-
-// iteration progress lines, then one JSON line with event "complete" (report
-// path, summary, and capped findings). Full detail remains in report.json.
+// RunIterations runs go test -json once per iteration, writing each stream to
+// iteration-<n>.log.jsonl under a new results directory and run-state.json on return.
 // Test iteration failures do not stop later runs (unless --fail-fast); compile/build
-// failures stop immediately. Results are reflected in report.json. Diagnose returns a non-nil error for setup failures
-// (e.g. mkdir, database reset), analyze/write report failures, or ctx errors
-// bubbling from dependencies — not for failing tests alone.
-// iterSetup and iterTeardown run before/after each iteration. Either may be
-// nil. Teardown runs even when the iteration's go test invocation fails; its
-// error is reported only when the iteration itself succeeded.
-//
-//nolint:gocyclo // orchestrates the multi-step diagnose run and report writing
-func Diagnose(
+// failures stop immediately. Returns a non-nil error for setup failures (e.g. mkdir,
+// database reset) or ctx errors from dependencies — not for failing tests alone.
+// iterSetup and iterTeardown run before/after each iteration. Either may be nil.
+// Teardown runs even when the iteration's go test invocation fails; its error is
+// reported only when the iteration itself succeeded.
+// Call FinishDiagnoseAnalysis separately to analyze results and write report.json.
+func RunIterations(
 	ctx context.Context,
 	conf *config.App,
 	out *output.Printer,
 	goTestArgs []string,
 	resources []hooks.Resource,
 	iterSetup, iterTeardown func(context.Context) error,
-) error {
+) (*DiagnoseRunState, time.Time, string, error) {
 	if out == nil {
 		out = output.NewFromApp(conf)
 	}
@@ -124,11 +120,11 @@ func Diagnose(
 
 	resultsDir, err := makeDiagnoseResultsDir(conf, goTestArgs, start)
 	if err != nil {
-		return err
+		return nil, start, "", err
 	}
 	printDiagnoseResultsDirHeader(out, resultsDir)
 	if err := printDiagnoseRunTimeEstimate(out, conf, goTestArgs, 0); err != nil {
-		return err
+		return nil, start, resultsDir, err
 	}
 
 	iterHooks := diagnoseRunHooks{
@@ -146,7 +142,7 @@ func Diagnose(
 	)
 	if runErr != nil {
 		if ctx.Err() == nil {
-			return runErr
+			return nil, start, resultsDir, runErr
 		}
 	}
 
@@ -156,6 +152,71 @@ func Diagnose(
 		} else {
 			out.Stderrf("bf_stop iter=%d pkgs=\n", state.failedFastIteration+1)
 		}
+		// When build fails fast, we stop completely and don't analyze
+		_ = writeRunState(resultsDir, conf, goTestArgs, state, start)
+		return state, start, resultsDir, nil
+	}
+
+	_ = writeRunState(resultsDir, conf, goTestArgs, state, start)
+	return state, start, resultsDir, runErr
+}
+
+// RunStateSnapshot is saved to disk so the diagnose analysis phase can be run
+// separately from the execution phase.
+type RunStateSnapshot struct {
+	Conf       *config.App       `json:"conf"`
+	GoTestArgs []string          `json:"go_test_args"`
+	State      *DiagnoseRunState `json:"state"`
+	Start      time.Time         `json:"start"`
+}
+
+func writeRunState(
+	resultsDir string,
+	conf *config.App,
+	goTestArgs []string,
+	state *DiagnoseRunState,
+	start time.Time,
+) error {
+	snap := RunStateSnapshot{
+		Conf:       conf,
+		GoTestArgs: goTestArgs,
+		State:      state,
+		Start:      start,
+	}
+	b, err := json.Marshal(snap)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(resultsDir, "run-state.json"), b, 0600)
+}
+
+// ReadRunState loads the snapshot from a diagnose results directory.
+func ReadRunState(resultsDir string) (*RunStateSnapshot, error) {
+	b, err := os.ReadFile(filepath.Join(resultsDir, "run-state.json")) //nolint:gosec // G304: path from filepath.Join
+	if err != nil {
+		return nil, err
+	}
+	var snap RunStateSnapshot
+	if err := json.Unmarshal(b, &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
+// FinishDiagnoseAnalysis completes the analysis phase of a diagnose run.
+// It is intended to be called after RunIterations and after resources have been cleaned up.
+//
+//nolint:gocyclo // orchestrates report writing
+func FinishDiagnoseAnalysis(
+	ctx context.Context,
+	conf *config.App,
+	out *output.Printer,
+	goTestArgs []string,
+	state *DiagnoseRunState,
+	start time.Time,
+	resultsDir string,
+) error {
+	if state.failedFast && state.failedFastReason == failFastReasonBuildFailure && state.failedFastIteration >= 0 {
 		return nil
 	}
 
@@ -328,7 +389,7 @@ func setupDiagnoseLiveProgress(
 	conf *config.App,
 	out *output.Printer,
 	parallel int,
-	state *diagnoseRunState,
+	state *DiagnoseRunState,
 ) (parallelProgress *parallelDiagnoseProgress, diagnoseRunStart time.Time, progressTickDone chan struct{}, progressTickWG *sync.WaitGroup) {
 	progressTickDone = make(chan struct{})
 	progressTickWG = &sync.WaitGroup{}
@@ -358,7 +419,7 @@ func setupDiagnoseLiveProgress(
 }
 
 func recordDiagnoseIterationResult(
-	state *diagnoseRunState,
+	state *DiagnoseRunState,
 	result diagnoseIterationResult,
 	conf *config.App,
 	out *output.Printer,
@@ -406,14 +467,14 @@ func runDiagnoseIterations(
 	goTestArgs []string,
 	resources []diagnoseIterationResource,
 	hooks diagnoseRunHooks,
-) (diagnoseRunState, error) {
+) (*DiagnoseRunState, error) {
 	if hooks.runIteration == nil {
 		hooks.runIteration = diagnoseIteration
 	}
 
 	moduleDir, adjustedArgs, err := modresolve.ResolveArgs(conf.RepoRoot, goTestArgs)
 	if err != nil {
-		return diagnoseRunState{}, err
+		return nil, err
 	}
 
 	if hooks.seed == nil {
@@ -427,7 +488,7 @@ func runDiagnoseIterations(
 		parallel = len(resources)
 	}
 	resources = resources[:parallel]
-	state := diagnoseRunState{
+	state := &DiagnoseRunState{
 		iterDurations:       make([]time.Duration, conf.Iterations),
 		failedFastIteration: -1,
 	}
@@ -448,7 +509,7 @@ func runDiagnoseIterations(
 		conf,
 		out,
 		parallel,
-		&state,
+		state,
 	)
 	defer func() {
 		close(progressTickDone)
@@ -507,7 +568,7 @@ func runDiagnoseIterations(
 			}
 			continue
 		}
-		recordDiagnoseIterationResult(&state, result, conf, out, parallelProgress, serialProgressMu)
+		recordDiagnoseIterationResult(state, result, conf, out, parallelProgress, serialProgressMu)
 	}
 	return state, firstErr
 }

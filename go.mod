@@ -10,7 +10,8 @@ replace github.com/smartcontractkit/testrig/tools/test => ./tools/test
 
 require (
 	charm.land/fang/v2 v2.0.1
-	charm.land/lipgloss/v2 v2.0.3
+	charm.land/lipgloss/v2 v2.0.4
+	github.com/buger/jsonparser v1.2.0
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/spf13/cobra v1.10.2
@@ -23,8 +24,8 @@ require (
 require (
 	github.com/bitfield/gotestdox v0.2.2 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
-	github.com/charmbracelet/ultraviolet v0.0.0-20260608091853-35bcb7319efa // indirect
-	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260608090822-c3ad58c6c9e5 // indirect
+	github.com/charmbracelet/ultraviolet v0.0.0-20260615092913-2399af76d5b1 // indirect
+	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260615092313-b57e5e6d29bb // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
