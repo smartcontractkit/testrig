@@ -19,6 +19,8 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/buger/jsonparser"
+
 	"github.com/smartcontractkit/testrig/internal/output"
 )
 
@@ -109,13 +111,53 @@ func parseTraceEvents(
 }
 
 type traceTestEvent struct {
-	Time        time.Time `json:"Time"`
-	Action      string    `json:"Action"`
-	Package     string    `json:"Package"`
-	Test        string    `json:"Test"`
-	Elapsed     float64   `json:"Elapsed"`
-	Output      string    `json:"Output"`
-	FailedBuild string    `json:"FailedBuild,omitempty"`
+	Time        time.Time
+	Action      string
+	Package     string
+	Test        string
+	Elapsed     float64
+	Output      string
+	FailedBuild string
+}
+
+func parseTraceTestEvent(line []byte, ev *traceTestEvent) error {
+	return jsonparser.ObjectEach(
+		line,
+		func(key []byte, value []byte, dataType jsonparser.ValueType, _ int) error {
+			switch string(key) {
+			case "Time":
+				if dataType == jsonparser.String {
+					s, _ := jsonparser.ParseString(value)
+					ev.Time, _ = time.Parse(time.RFC3339Nano, s)
+				}
+			case "Action":
+				if dataType == jsonparser.String {
+					ev.Action, _ = jsonparser.ParseString(value)
+				}
+			case "Package":
+				if dataType == jsonparser.String {
+					ev.Package, _ = jsonparser.ParseString(value)
+				}
+			case "Test":
+				if dataType == jsonparser.String {
+					ev.Test, _ = jsonparser.ParseString(value)
+				}
+			case "Elapsed":
+				if dataType == jsonparser.Number {
+					ev.Elapsed, _ = jsonparser.ParseFloat(value)
+				}
+			case "Output":
+				if dataType == jsonparser.String {
+					ev.Output, _ = jsonparser.ParseString(value)
+				}
+			case "FailedBuild":
+				if dataType == jsonparser.String {
+					ev.FailedBuild, _ = jsonparser.ParseString(value)
+				}
+			}
+			return nil
+		},
+	)
 }
 
 func scanTraceEvents(
@@ -145,7 +187,8 @@ func scanTraceEvents(
 			continue
 		}
 		var ev traceTestEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
+		err := parseTraceTestEvent(line, &ev)
+		if err != nil {
 			if out != nil {
 				out.Stderrf("trace: skip malformed jsonl (iteration %d): %v\n", iter, err)
 			}

@@ -29,6 +29,7 @@ const maxDiagnoseLogFilenameBytes = 240
 // -timeout fires. It may be attached to a running test or to the package.
 const timeoutPanic = "panic: test timed out"
 
+// TestEvent represents a parsed test event from the JSONL log stream.
 type TestEvent struct {
 	Action      string
 	Package     string
@@ -38,32 +39,29 @@ type TestEvent struct {
 	FailedBuild string
 }
 
-var (
-	internMu sync.RWMutex
-	interns  = make(map[string]string)
-)
+// stringInterner deduplicates identical strings during JSON log parsing.
+// Test logs often contain millions of events with highly repetitive fields
+// like Package and Test names. By interning these byte slices into shared string
+// references, we significantly reduce memory allocations and prevent OOM errors
+// when analyzing very large test suites.
+type stringInterner struct {
+	m map[string]string
+}
 
-func internStringBytes(b []byte) string {
+func newStringInterner() *stringInterner {
+	return &stringInterner{m: make(map[string]string)}
+}
+
+func (i *stringInterner) intern(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
-	// Fast path for reading
-	internMu.RLock()
-	s, ok := interns[string(b)]
-	internMu.RUnlock()
-	if ok {
-		return s
-	}
-
-	// Slow path for writing
-	internMu.Lock()
-	defer internMu.Unlock()
-	s, ok = interns[string(b)]
+	s, ok := i.m[string(b)]
 	if ok {
 		return s
 	}
 	s = string(b)
-	interns[s] = s
+	i.m[s] = s
 	return s
 }
 
@@ -247,8 +245,9 @@ var readerPool = sync.Pool{
 // Malformed lines are silently skipped (go test can interleave non-JSON).
 func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogMap, error) {
 	aggs := make(map[testKey]*aggregate)
+	interner := newStringInterner()
 	for i, r := range iterations {
-		if err := scanIterationJSONL(r, i, aggs, nil, slowThreshold); err != nil {
+		if err := scanIterationJSONL(r, i, aggs, nil, slowThreshold, interner); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -279,6 +278,7 @@ func scanIterationJSONL(
 	aggs map[testKey]*aggregate,
 	meta *iterationScanMeta,
 	slowThreshold time.Duration,
+	interner *stringInterner,
 ) error {
 	reader := readerPool.Get().(*bufio.Reader)
 	reader.Reset(r)
@@ -299,14 +299,14 @@ func scanIterationJSONL(
 			var ev TestEvent
 			err := jsonparser.ObjectEach(
 				line,
-				func(key []byte, value []byte, dataType jsonparser.ValueType, offset int) error {
+				func(key []byte, value []byte, dataType jsonparser.ValueType, _ int) error {
 					switch string(key) {
 					case "Action":
-						ev.Action = internStringBytes(value)
+						ev.Action = interner.intern(value)
 					case "Package":
-						ev.Package = internStringBytes(value)
+						ev.Package = interner.intern(value)
 					case "Test":
-						ev.Test = internStringBytes(value)
+						ev.Test = interner.intern(value)
 					case "Elapsed":
 						if dataType == jsonparser.Number {
 							ev.Elapsed, _ = jsonparser.ParseFloat(value)
@@ -682,7 +682,8 @@ func countNamedTestsSkippedInAggs(aggs map[testKey]*aggregate) int {
 func DigestIterationJSONL(r io.Reader, slowThreshold time.Duration) (IterationDigest, error) {
 	aggs := make(map[testKey]*aggregate)
 	var meta iterationScanMeta
-	if err := scanIterationJSONL(r, 0, aggs, &meta, slowThreshold); err != nil {
+	interner := newStringInterner()
+	if err := scanIterationJSONL(r, 0, aggs, &meta, slowThreshold, interner); err != nil {
 		return IterationDigest{}, err
 	}
 	reattributeTimeouts(aggs, newAggregate)
@@ -724,6 +725,7 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 		return iterNumber(matches[i]) < iterNumber(matches[j])
 	})
 	aggs := make(map[testKey]*aggregate)
+	interner := newStringInterner()
 	for i, p := range matches {
 		if err := func() error {
 			f, err := os.Open(p) //nolint:gosec // G304: path from filepath.Glob
@@ -731,7 +733,7 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 				return err
 			}
 			defer func() { _ = f.Close() }()
-			return scanIterationJSONL(f, i, aggs, nil, slowThreshold)
+			return scanIterationJSONL(f, i, aggs, nil, slowThreshold, interner)
 		}(); err != nil {
 			return nil, nil, err
 		}
