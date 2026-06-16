@@ -183,6 +183,9 @@ func TestStartDiagnoseAnalyzingProgress_afterLiveProgress_clearsWrappedInline(t 
 
 func TestStartDiagnoseAnalyzingProgress_liveInline_updatesDuration(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping memory test in short mode")
+	}
 	var stderr strings.Builder
 	out := output.NewForTest(false, io.Discard, &stderr, true)
 
@@ -952,6 +955,9 @@ func TestRunDiagnoseIterationsStopsOnBuildFailure(t *testing.T) {
 // Without a shared mutex, scheduling can merge progress and digest on one line.
 func TestRunDiagnoseIterations_serialLiveProgressMutex_noMergedProgressAndTableLines(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping test in short mode")
+	}
 	var stderr strings.Builder
 	out := output.NewForTest(false, io.Discard, &stderr, true)
 	require.True(t, out.LiveInlineProgress())

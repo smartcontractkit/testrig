@@ -50,6 +50,9 @@ func (m *mockJSONLReader) Read(p []byte) (n int, err error) {
 
 //nolint:paralleltest // serial: memory stats need stable measurement
 func TestAnalyzeMemory_Limit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping memory test in short mode")
+	}
 	numIters := 250
 	numTests := 8500 // roughly chainlink scale
 
