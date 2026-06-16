@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/buger/jsonparser"
 
 	"github.com/smartcontractkit/testrig/internal/termstyle"
 )
@@ -28,15 +29,42 @@ const maxDiagnoseLogFilenameBytes = 240
 // -timeout fires. It may be attached to a running test or to the package.
 const timeoutPanic = "panic: test timed out"
 
-// TestEvent mirrors cmd/internal/test2json's TestEvent; only fields we need.
 type TestEvent struct {
-	Time        time.Time `json:"Time"`
-	Action      string    `json:"Action"`
-	Package     string    `json:"Package"`
-	Test        string    `json:"Test"`
-	Elapsed     float64   `json:"Elapsed"`
-	Output      string    `json:"Output"`
-	FailedBuild string    `json:"FailedBuild,omitempty"`
+	Action      string
+	Package     string
+	Test        string
+	Elapsed     float64
+	Output      string
+	FailedBuild string
+}
+
+var (
+	internMu sync.RWMutex
+	interns  = make(map[string]string)
+)
+
+func internStringBytes(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	// Fast path for reading
+	internMu.RLock()
+	s, ok := interns[string(b)]
+	internMu.RUnlock()
+	if ok {
+		return s
+	}
+
+	// Slow path for writing
+	internMu.Lock()
+	defer internMu.Unlock()
+	s, ok = interns[string(b)]
+	if ok {
+		return s
+	}
+	s = string(b)
+	interns[s] = s
+	return s
 }
 
 // iterationScanMeta collects signals during scan that are not represented in aggregates only.
@@ -269,7 +297,35 @@ func scanIterationJSONL(
 
 		if len(line) > 0 && line[0] == '{' {
 			var ev TestEvent
-			if json.Unmarshal(line, &ev) == nil {
+			err := jsonparser.ObjectEach(
+				line,
+				func(key []byte, value []byte, dataType jsonparser.ValueType, offset int) error {
+					switch string(key) {
+					case "Action":
+						ev.Action = internStringBytes(value)
+					case "Package":
+						ev.Package = internStringBytes(value)
+					case "Test":
+						ev.Test = internStringBytes(value)
+					case "Elapsed":
+						if dataType == jsonparser.Number {
+							ev.Elapsed, _ = jsonparser.ParseFloat(value)
+						}
+					case "Output":
+						if dataType == jsonparser.String {
+							s, _ := jsonparser.ParseString(value)
+							ev.Output = s
+						}
+					case "FailedBuild":
+						if dataType == jsonparser.String {
+							s, _ := jsonparser.ParseString(value)
+							ev.FailedBuild = s
+						}
+					}
+					return nil
+				},
+			)
+			if err == nil {
 				applyTestEvent(aggs, iterIdx, &ev, meta, slowThreshold)
 			}
 		}
