@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/smartcontractkit/testrig/internal/config"
 	"github.com/smartcontractkit/testrig/internal/hooks"
 )
 
@@ -125,7 +126,7 @@ func TestRunRootAfterParsingAppliesFlagsBeforeHooks(t *testing.T) {
 		cmd,
 		[]string{"--global-setup", touchCmd(marker)},
 		hooks.RunOptions{},
-		func([]string) error {
+		func(_ *config.App, _ []string, _ []string) error {
 			return nil
 		},
 	)
@@ -145,7 +146,7 @@ func TestRunRootAfterParsingHelpSkipsHooks(t *testing.T) {
 		cmd,
 		[]string{"--global-setup", touchCmd(marker), "-h"},
 		hooks.RunOptions{},
-		func([]string) error {
+		func(_ *config.App, _ []string, _ []string) error {
 			return nil
 		},
 	)

@@ -443,13 +443,8 @@ func buildReportFromAggs(
 
 	pkgEntries, testsByPkg := categorizeAggregates(aggs, slowThreshold, rep)
 
-	pkgNames := make([]string, 0, len(testsByPkg))
-	for pkgName := range testsByPkg {
-		pkgNames = append(pkgNames, pkgName)
-	}
-	sort.Strings(pkgNames)
-	for _, pkgName := range pkgNames {
-		rep.Slow = append(rep.Slow, testsByPkg[pkgName]...)
+	for _, entries := range testsByPkg {
+		rep.Slow = append(rep.Slow, entries...)
 	}
 
 	rep.SlowestPackages = computeSlowestPackages(pkgEntries, slowThreshold)

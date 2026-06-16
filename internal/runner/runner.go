@@ -205,8 +205,6 @@ func ReadRunState(resultsDir string) (*RunStateSnapshot, error) {
 
 // FinishDiagnoseAnalysis completes the analysis phase of a diagnose run.
 // It is intended to be called after RunIterations and after resources have been cleaned up.
-//
-//nolint:gocyclo // orchestrates report writing
 func FinishDiagnoseAnalysis(
 	ctx context.Context,
 	conf *config.App,
@@ -220,6 +218,42 @@ func FinishDiagnoseAnalysis(
 		return nil
 	}
 
+	printDiagnoseInterruptions(ctx, conf, out, state)
+
+	stopAnalyzing := startDiagnoseAnalyzingProgress(out, state.liveProgress)
+	var report *Report
+	var logs LogMap
+	var analyzeErr error
+	report, logs, analyzeErr = AnalyzeResults(resultsDir, conf.SlowThreshold)
+	stopAnalyzing(analyzeErr)
+	if analyzeErr != nil {
+		out.Stderrf("analyze results: %v\n", analyzeErr)
+		return analyzeErr
+	}
+
+	if report != nil {
+		for i, d := range state.iterDurations {
+			if i >= len(report.IterationSummaries) {
+				break
+			}
+			report.IterationSummaries[i].Duration = d
+			if state.shuffleSeeds != nil {
+				report.IterationSummaries[i].ShuffleSeed = state.shuffleSeeds[i]
+			}
+		}
+		finished := time.Now()
+		report.Run = newRunMeta(conf, goTestArgs, resultsDir, start, &finished)
+		fillIterationRuntimeSummary(report)
+	}
+
+	if err := writeDiagnoseArtifacts(out, resultsDir, report, logs); err != nil {
+		return err
+	}
+
+	return finalizeDiagnoseOutput(ctx, conf, out, report, resultsDir, start)
+}
+
+func printDiagnoseInterruptions(ctx context.Context, conf *config.App, out *output.Printer, state *DiagnoseRunState) {
 	interrupted := ctx.Err() != nil
 	if interrupted && !out.AIOutput() {
 		out.HumanStderr(
@@ -245,31 +279,9 @@ func FinishDiagnoseAnalysis(
 			out.HumanStderr(termstyle.Accent.Render(msg))
 		}
 	}
+}
 
-	stopAnalyzing := startDiagnoseAnalyzingProgress(out, state.liveProgress)
-	var report *Report
-	var logs LogMap
-	var analyzeErr error
-	report, logs, analyzeErr = AnalyzeResults(resultsDir, conf.SlowThreshold)
-	stopAnalyzing(analyzeErr)
-	if analyzeErr != nil {
-		out.Stderrf("analyze results: %v\n", analyzeErr)
-		return analyzeErr
-	}
-	if report != nil {
-		for i, d := range state.iterDurations {
-			if i >= len(report.IterationSummaries) {
-				break
-			}
-			report.IterationSummaries[i].Duration = d
-			if state.shuffleSeeds != nil {
-				report.IterationSummaries[i].ShuffleSeed = state.shuffleSeeds[i]
-			}
-		}
-		finished := time.Now()
-		report.Run = newRunMeta(conf, goTestArgs, resultsDir, start, &finished)
-		fillIterationRuntimeSummary(report)
-	}
+func writeDiagnoseArtifacts(out *output.Printer, resultsDir string, report *Report, logs LogMap) error {
 	if err := WriteLogFiles(resultsDir, report, logs); err != nil {
 		out.Stderrf("write log files: %v\n", err)
 		return err
@@ -282,7 +294,17 @@ func FinishDiagnoseAnalysis(
 		out.Stderrf("write csv: %v\n", err)
 		return err
 	}
+	return nil
+}
 
+func finalizeDiagnoseOutput(
+	ctx context.Context,
+	conf *config.App,
+	out *output.Printer,
+	report *Report,
+	resultsDir string,
+	start time.Time,
+) error {
 	reportPath := filepath.Join(resultsDir, "report.json")
 	csvPath := diagnoseCSVPath(resultsDir, report)
 	traceJSONPath := ""

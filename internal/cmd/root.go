@@ -27,18 +27,14 @@ func NewRootCommand(runnerOpts hooks.RunOptions) *cobra.Command {
 		Args:               cobra.ArbitraryArgs,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) (err error) {
-			return runRootAfterParsing(cmd, args, runnerOpts, func(goTestArgs []string) error {
-				conf, err := config.Load(cmd)
-				if err != nil {
-					return err
-				}
-				env, cleanup, err := resourceEnv(cmd.Context(), runnerOpts)
-				if err != nil {
-					return err
-				}
-				defer func() { finishResourceCleanup(cmd, &err, cleanup) }()
-				return runner.GoTest(cmd.Context(), conf, goTestArgs, env)
-			})
+			return runRootAfterParsing(
+				cmd,
+				args,
+				runnerOpts,
+				func(conf *config.App, env []string, goTestArgs []string) error {
+					return runner.GoTest(cmd.Context(), conf, goTestArgs, env)
+				},
+			)
 		},
 	}
 
