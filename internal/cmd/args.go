@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/smartcontractkit/testrig/internal/config"
 	"github.com/smartcontractkit/testrig/internal/hooks"
 )
 
@@ -92,7 +93,7 @@ func runRootAfterParsing(
 	cmd *cobra.Command,
 	args []string,
 	runnerOpts hooks.RunOptions,
-	fn func(remainder []string) error,
+	fn func(conf *config.App, env []string, remainder []string) error,
 ) error {
 	if isHelpRequest(args) {
 		return pflag.ErrHelp
@@ -101,7 +102,16 @@ func runRootAfterParsing(
 	if err != nil {
 		return err
 	}
-	return withGlobalHooks(runnerOpts, func(*cobra.Command, []string) error {
-		return fn(remainder)
+	return withGlobalHooks(runnerOpts, func(cmd *cobra.Command, _ []string) error {
+		conf, err := config.Load(cmd)
+		if err != nil {
+			return err
+		}
+		env, cleanup, err := resourceEnv(cmd.Context(), runnerOpts)
+		if err != nil {
+			return err
+		}
+		defer func() { finishResourceCleanup(cmd, &err, cleanup) }()
+		return fn(conf, env, remainder)
 	})(cmd, args)
 }
