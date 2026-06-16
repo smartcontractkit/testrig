@@ -351,8 +351,6 @@ func applyTestEvent(
 }
 
 // buildReportFromAggs produces Report and LogMap from merged aggregates (after reattributeTimeouts).
-//
-//nolint:gocyclo
 func buildReportFromAggs(
 	aggs map[testKey]*aggregate,
 	numIterations int,
@@ -363,6 +361,36 @@ func buildReportFromAggs(
 		SlowThreshold: slowThreshold,
 	}
 
+	pkgEntries, testsByPkg := categorizeAggregates(aggs, slowThreshold, rep)
+
+	pkgNames := make([]string, 0, len(testsByPkg))
+	for pkgName := range testsByPkg {
+		pkgNames = append(pkgNames, pkgName)
+	}
+	sort.Strings(pkgNames)
+	for _, pkgName := range pkgNames {
+		rep.Slow = append(rep.Slow, testsByPkg[pkgName]...)
+	}
+
+	rep.SlowestPackages = computeSlowestPackages(pkgEntries, slowThreshold)
+
+	sortEntries(rep.Flakes)
+	sortEntries(rep.Failures)
+	sortEntries(rep.Timeouts)
+	sortEntries(rep.Slow)
+
+	rep.IterationSummaries = buildIterationSummaries(aggs, numIterations)
+	rep.Summary = buildReportSummary(rep, aggs, slowThreshold)
+
+	logs := buildLogMap(aggs)
+	return rep, logs
+}
+
+func categorizeAggregates(
+	aggs map[testKey]*aggregate,
+	slowThreshold time.Duration,
+	rep *Report,
+) ([]TestEntry, map[string][]TestEntry) {
 	var pkgEntries []TestEntry
 	var testsByPkg = make(map[string][]TestEntry)
 
@@ -413,38 +441,32 @@ func buildReportFromAggs(
 			testsByPkg[key.Package] = append(testsByPkg[key.Package], base)
 		}
 	}
+	return pkgEntries, testsByPkg
+}
 
-	pkgNames := make([]string, 0, len(testsByPkg))
-	for pkgName := range testsByPkg {
-		pkgNames = append(pkgNames, pkgName)
+func computeSlowestPackages(pkgEntries []TestEntry, slowThreshold time.Duration) []TestEntry {
+	if slowThreshold <= 0 {
+		return nil
 	}
-	sort.Strings(pkgNames)
-	for _, pkgName := range pkgNames {
-		rep.Slow = append(rep.Slow, testsByPkg[pkgName]...)
-	}
-
-	if slowThreshold > 0 {
-		slices.SortFunc(pkgEntries, func(a, b TestEntry) int {
-			return cmp.Or(
-				cmp.Compare(b.MaxElapsed, a.MaxElapsed),
-				strings.Compare(a.Package, b.Package),
-			)
-		})
-		for _, pkg := range pkgEntries {
-			if pkg.MaxElapsed >= slowThreshold && !pkgAggregateExcludedFromSlowReports(pkg) {
-				rep.SlowestPackages = append(rep.SlowestPackages, pkg)
-				if len(rep.SlowestPackages) >= 10 {
-					break
-				}
+	slices.SortFunc(pkgEntries, func(a, b TestEntry) int {
+		return cmp.Or(
+			cmp.Compare(b.MaxElapsed, a.MaxElapsed),
+			strings.Compare(a.Package, b.Package),
+		)
+	})
+	var slowest []TestEntry
+	for _, pkg := range pkgEntries {
+		if pkg.MaxElapsed >= slowThreshold && !pkgAggregateExcludedFromSlowReports(pkg) {
+			slowest = append(slowest, pkg)
+			if len(slowest) >= 10 {
+				break
 			}
 		}
 	}
+	return slowest
+}
 
-	sortEntries(rep.Flakes)
-	sortEntries(rep.Failures)
-	sortEntries(rep.Timeouts)
-	sortEntries(rep.Slow)
-
+func buildIterationSummaries(aggs map[testKey]*aggregate, numIterations int) []IterationSummary {
 	iterFails := make(map[int][]string, numIterations)
 	iterTimedOut := make(map[int]bool, numIterations)
 	iterPkgHasTestFail := make(map[int]map[string]bool, numIterations)
@@ -489,12 +511,7 @@ func buildReportFromAggs(
 		}
 		summaries[i] = s
 	}
-	rep.IterationSummaries = summaries
-
-	rep.Summary = buildReportSummary(rep, aggs, slowThreshold)
-
-	logs := buildLogMap(aggs)
-	return rep, logs
+	return summaries
 }
 
 func buildReportSummary(rep *Report, aggs map[testKey]*aggregate, slowThreshold time.Duration) *ReportSummary {
