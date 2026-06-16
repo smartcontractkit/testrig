@@ -31,6 +31,7 @@ const timeoutPanic = "panic: test timed out"
 
 // TestEvent represents a parsed test event from the JSONL log stream.
 type TestEvent struct {
+	Time        time.Time
 	Action      string
 	Package     string
 	Test        string
@@ -270,6 +271,56 @@ func (a *aggregate) recordElapsed(d time.Duration) {
 	}
 }
 
+// parseTestEvent parses a single JSONL test event into ev. If interner is not nil,
+// it deduplicates Action, Package, and Test strings.
+func parseTestEvent(line []byte, ev *TestEvent, interner *stringInterner) error {
+	return jsonparser.ObjectEach(
+		line,
+		func(key []byte, value []byte, dataType jsonparser.ValueType, _ int) error {
+			switch string(key) {
+			case "Time":
+				if dataType == jsonparser.String {
+					s, _ := jsonparser.ParseString(value)
+					ev.Time, _ = time.Parse(time.RFC3339Nano, s)
+				}
+			case "Action":
+				if interner != nil {
+					ev.Action = interner.intern(value)
+				} else if dataType == jsonparser.String {
+					ev.Action, _ = jsonparser.ParseString(value)
+				}
+			case "Package":
+				if interner != nil {
+					ev.Package = interner.intern(value)
+				} else if dataType == jsonparser.String {
+					ev.Package, _ = jsonparser.ParseString(value)
+				}
+			case "Test":
+				if interner != nil {
+					ev.Test = interner.intern(value)
+				} else if dataType == jsonparser.String {
+					ev.Test, _ = jsonparser.ParseString(value)
+				}
+			case "Elapsed":
+				if dataType == jsonparser.Number {
+					ev.Elapsed, _ = jsonparser.ParseFloat(value)
+				}
+			case "Output":
+				if dataType == jsonparser.String {
+					s, _ := jsonparser.ParseString(value)
+					ev.Output = s
+				}
+			case "FailedBuild":
+				if dataType == jsonparser.String {
+					s, _ := jsonparser.ParseString(value)
+					ev.FailedBuild = s
+				}
+			}
+			return nil
+		},
+	)
+}
+
 // scanIterationJSONL merges one iteration's JSONL stream into aggs at iterIdx.
 // meta may be nil; when set, records e.g. compile/build failure from FailedBuild on fail events.
 func scanIterationJSONL(
@@ -297,34 +348,7 @@ func scanIterationJSONL(
 
 		if len(line) > 0 && line[0] == '{' {
 			var ev TestEvent
-			err := jsonparser.ObjectEach(
-				line,
-				func(key []byte, value []byte, dataType jsonparser.ValueType, _ int) error {
-					switch string(key) {
-					case "Action":
-						ev.Action = interner.intern(value)
-					case "Package":
-						ev.Package = interner.intern(value)
-					case "Test":
-						ev.Test = interner.intern(value)
-					case "Elapsed":
-						if dataType == jsonparser.Number {
-							ev.Elapsed, _ = jsonparser.ParseFloat(value)
-						}
-					case "Output":
-						if dataType == jsonparser.String {
-							s, _ := jsonparser.ParseString(value)
-							ev.Output = s
-						}
-					case "FailedBuild":
-						if dataType == jsonparser.String {
-							s, _ := jsonparser.ParseString(value)
-							ev.FailedBuild = s
-						}
-					}
-					return nil
-				},
-			)
+			err := parseTestEvent(line, &ev, interner)
 			if err == nil {
 				applyTestEvent(aggs, iterIdx, &ev, meta, slowThreshold)
 			}
