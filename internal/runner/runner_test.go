@@ -18,10 +18,29 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/smartcontractkit/testrig/internal/config"
+	"github.com/smartcontractkit/testrig/internal/hooks"
 	"github.com/smartcontractkit/testrig/internal/output"
 )
 
 var diagnoseResultsDirNameAt = time.Date(2024, 6, 1, 12, 30, 45, 0, time.UTC)
+
+// Diagnose is a helper for tests to run the full split flow
+func Diagnose(
+	ctx context.Context,
+	conf *config.App,
+	out *output.Printer,
+	goTestArgs []string,
+	resources []hooks.Resource,
+	iterSetup, iterTeardown func(context.Context) error,
+) error {
+	state, start, resultsDir, err := RunIterations(ctx, conf, out, goTestArgs, resources, iterSetup, iterTeardown)
+	if err != nil {
+		if ctx.Err() == nil {
+			return err
+		}
+	}
+	return FinishDiagnoseAnalysis(ctx, conf, out, goTestArgs, state, start, resultsDir)
+}
 
 // When ctx is already canceled before Diagnose starts, no iterations run but
 // analysis still produces a report.json — this is the path a user hits after

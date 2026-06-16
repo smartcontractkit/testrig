@@ -50,18 +50,19 @@ type testKey struct {
 }
 
 type aggregate struct {
-	passes        int
-	fails         int
-	skips         int
-	maxElapsed    time.Duration
-	timedOut      bool
-	iterations    map[int]struct{}
-	failedIters   map[int]bool
-	timeoutIters  map[int]bool
-	skipIters     map[int]bool
-	outputs       map[int]*strings.Builder
-	elapseds      []time.Duration
-	elapsedByIter map[int]time.Duration
+	passes       int
+	fails        int
+	skips        int
+	maxElapsed   time.Duration
+	timedOut     bool
+	lastRunIter  int
+	runs         int
+	failedIters  []int
+	timeoutIters []int
+	skipIters    []int
+	slowIters    []int
+	outputs      map[int]*strings.Builder
+	elapseds     []time.Duration
 }
 
 // ProblemLog points to log files for iterations where this entry actually had
@@ -230,18 +231,13 @@ func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogM
 
 func newAggregate() *aggregate {
 	return &aggregate{
-		iterations:    map[int]struct{}{},
-		failedIters:   map[int]bool{},
-		timeoutIters:  map[int]bool{},
-		skipIters:     map[int]bool{},
-		outputs:       map[int]*strings.Builder{},
-		elapsedByIter: map[int]time.Duration{},
+		lastRunIter: -1,
+		outputs:     map[int]*strings.Builder{},
 	}
 }
 
-func (a *aggregate) recordElapsed(iterIdx int, d time.Duration) {
+func (a *aggregate) recordElapsed(d time.Duration) {
 	a.elapseds = append(a.elapseds, d)
-	a.elapsedByIter[iterIdx] = d
 	if d > a.maxElapsed {
 		a.maxElapsed = d
 	}
@@ -300,12 +296,22 @@ func applyTestEvent(
 		a = newAggregate()
 		aggs[key] = a
 	}
+
+	if a.lastRunIter != iterIdx && ev.Action != "output" {
+		a.runs++
+		a.lastRunIter = iterIdx
+	}
+
 	switch ev.Action {
 	case "pass":
 		a.passes++
-		a.iterations[iterIdx] = struct{}{}
 		el := seconds(ev.Elapsed)
-		a.recordElapsed(iterIdx, el)
+		a.recordElapsed(el)
+		if slowThreshold > 0 && el > slowThreshold {
+			if len(a.slowIters) == 0 || a.slowIters[len(a.slowIters)-1] != iterIdx {
+				a.slowIters = append(a.slowIters, iterIdx)
+			}
+		}
 		if !a.timedOut && (slowThreshold == 0 || el <= slowThreshold) {
 			delete(a.outputs, iterIdx)
 		}
@@ -314,23 +320,26 @@ func applyTestEvent(
 			meta.sawFailedBuild = true
 		}
 		a.fails++
-		a.iterations[iterIdx] = struct{}{}
-		a.failedIters[iterIdx] = true
-		a.recordElapsed(iterIdx, seconds(ev.Elapsed))
+		if len(a.failedIters) == 0 || a.failedIters[len(a.failedIters)-1] != iterIdx {
+			a.failedIters = append(a.failedIters, iterIdx)
+		}
+		a.recordElapsed(seconds(ev.Elapsed))
 	case "skip":
 		a.skips++
-		a.iterations[iterIdx] = struct{}{}
-		a.skipIters[iterIdx] = true
+		if len(a.skipIters) == 0 || a.skipIters[len(a.skipIters)-1] != iterIdx {
+			a.skipIters = append(a.skipIters, iterIdx)
+		}
 		el := seconds(ev.Elapsed)
-		a.recordElapsed(iterIdx, el)
+		a.recordElapsed(el)
 		if !a.timedOut {
 			delete(a.outputs, iterIdx)
 		}
 	case "output":
 		if strings.Contains(ev.Output, timeoutPanic) {
 			a.timedOut = true
-			a.iterations[iterIdx] = struct{}{}
-			a.timeoutIters[iterIdx] = true
+			if len(a.timeoutIters) == 0 || a.timeoutIters[len(a.timeoutIters)-1] != iterIdx {
+				a.timeoutIters = append(a.timeoutIters, iterIdx)
+			}
 		}
 		buf := a.outputs[iterIdx]
 		if buf == nil {
@@ -359,7 +368,7 @@ func buildReportFromAggs(
 
 	for key, a := range aggs {
 		minE, p50 := stats(a.elapseds)
-		runs := len(a.iterations)
+		runs := a.runs
 		ciLo, ciHi := WilsonScoreInterval(a.fails, runs, 0)
 		base := TestEntry{
 			Package:       key.Package,
@@ -374,9 +383,9 @@ func buildReportFromAggs(
 			MinElapsed:    minE,
 			MaxElapsed:    a.maxElapsed,
 			P50Elapsed:    p50,
-			FailIters:     sortedBoolMapKeys(a.failedIters),
-			TimeoutIters:  sortedBoolMapKeys(a.timeoutIters),
-			SlowIters:     slowIterations(a.elapsedByIter, slowThreshold),
+			FailIters:     a.failedIters,
+			TimeoutIters:  a.timeoutIters,
+			SlowIters:     a.slowIters,
 		}
 		if key.Test == "" {
 			pkgEntries = append(pkgEntries, base)
@@ -443,7 +452,7 @@ func buildReportFromAggs(
 		if key.Test == "" {
 			continue
 		}
-		for i := range a.failedIters {
+		for _, i := range a.failedIters {
 			if iterPkgHasTestFail[i] == nil {
 				iterPkgHasTestFail[i] = make(map[string]bool)
 			}
@@ -451,14 +460,14 @@ func buildReportFromAggs(
 		}
 	}
 	for key, a := range aggs {
-		for i := range a.timeoutIters {
+		for _, i := range a.timeoutIters {
 			iterTimedOut[i] = true
 		}
 		failName := key.Test
 		if failName == "" {
 			failName = key.Package
 		}
-		for i := range a.failedIters {
+		for _, i := range a.failedIters {
 			if key.Test == "" && iterPkgHasTestFail[i][key.Package] {
 				continue
 			}
@@ -569,7 +578,7 @@ func countNamedTestsRanInAggs(aggs map[testKey]*aggregate) int {
 		if k.Test == "" {
 			continue
 		}
-		if len(a.iterations) == 0 || aggregateSkipOnly(a) {
+		if a.runs == 0 || aggregateSkipOnly(a) {
 			continue
 		}
 		n++
@@ -641,22 +650,22 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 	sort.Slice(matches, func(i, j int) bool {
 		return iterNumber(matches[i]) < iterNumber(matches[j])
 	})
-	readers := make([]io.Reader, 0, len(matches))
-	files := make([]*os.File, 0, len(matches))
-	defer func() {
-		for _, f := range files {
-			_ = f.Close()
-		}
-	}()
-	for _, p := range matches {
-		f, err := os.Open(p) //nolint:gosec // G304: path from filepath.Glob
-		if err != nil {
+	aggs := make(map[testKey]*aggregate)
+	for i, p := range matches {
+		if err := func() error {
+			f, err := os.Open(p) //nolint:gosec // G304: path from filepath.Glob
+			if err != nil {
+				return err
+			}
+			defer func() { _ = f.Close() }()
+			return scanIterationJSONL(f, i, aggs, nil, slowThreshold)
+		}(); err != nil {
 			return nil, nil, err
 		}
-		files = append(files, f)
-		readers = append(readers, f)
 	}
-	return Analyze(readers, slowThreshold)
+	reattributeTimeouts(aggs, newAggregate)
+	rep, logs := buildReportFromAggs(aggs, len(matches), slowThreshold)
+	return rep, logs, nil
 }
 
 // WriteReport writes the report as pretty JSON to <resultsDir>/report.json.
@@ -1093,22 +1102,22 @@ func reattributeTimeouts(aggs map[testKey]*aggregate, newAgg func() *aggregate) 
 		if !a.timedOut {
 			continue
 		}
-		for i := range a.timeoutIters {
+		var keptTimeouts []int
+		for _, i := range a.timeoutIters {
 			buf := a.outputs[i]
 			if buf == nil {
+				keptTimeouts = append(keptTimeouts, i)
 				continue
 			}
 			output := buf.String()
 			names := parseRunningTests(output)
 			if len(names) == 0 {
+				keptTimeouts = append(keptTimeouts, i)
 				continue
 			}
 			if slices.Contains(names, key.Test) {
+				keptTimeouts = append(keptTimeouts, i)
 				continue
-			}
-			delete(a.timeoutIters, i)
-			if len(a.timeoutIters) == 0 {
-				a.timedOut = false
 			}
 			for _, name := range names {
 				nk := testKey{Package: key.Package, Test: name}
@@ -1118,13 +1127,22 @@ func reattributeTimeouts(aggs map[testKey]*aggregate, newAgg func() *aggregate) 
 					aggs[nk] = na
 				}
 				na.timedOut = true
-				na.timeoutIters[i] = true
-				na.iterations[i] = struct{}{}
+				if len(na.timeoutIters) == 0 || na.timeoutIters[len(na.timeoutIters)-1] != i {
+					na.timeoutIters = append(na.timeoutIters, i)
+				}
+				if na.lastRunIter != i {
+					na.runs++
+					na.lastRunIter = i
+				}
 				if na.outputs[i] == nil {
 					na.outputs[i] = &strings.Builder{}
 				}
 				_, _ = na.outputs[i].WriteString(output)
 			}
+		}
+		a.timeoutIters = keptTimeouts
+		if len(a.timeoutIters) == 0 {
+			a.timedOut = false
 		}
 	}
 }
@@ -1191,15 +1209,6 @@ func buildLogMap(aggs map[testKey]*aggregate) LogMap {
 	return out
 }
 
-func sortedBoolMapKeys(m map[int]bool) []int {
-	keys := make([]int, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-	return keys
-}
-
 // pkgAggregateExcludedFromSlowReports is true for package-level aggregates that
 // belong only in Failures or Timeouts, not in rep.SlowestPackages ranking.
 func pkgAggregateExcludedFromSlowReports(e TestEntry) bool {
@@ -1213,20 +1222,6 @@ func pkgAggregateExcludedFromSlowReports(e TestEntry) bool {
 		return true
 	}
 	return false
-}
-
-func slowIterations(elapsedByIter map[int]time.Duration, threshold time.Duration) []int {
-	if threshold <= 0 {
-		return nil
-	}
-	var iters []int
-	for iter, elapsed := range elapsedByIter {
-		if elapsed > threshold {
-			iters = append(iters, iter)
-		}
-	}
-	sort.Ints(iters)
-	return iters
 }
 
 // sortedDurationStats returns min, max, and median (p50) from wall-clock or elapsed samples.
