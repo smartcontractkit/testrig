@@ -1,0 +1,786 @@
+<pr branch="gracefulCancel -> main">
+<stats code="+561 -17 (7 files)" />
+
+<diff>
+<file path="internal/cmd/diagnose.go" status="modified" additions="7" deletions="3">
+<hunk line="1">
+ package cmd
+
+ import (
++	"context"
+ 	"time"
+
+ 	"github.com/spf13/cobra"
+</hunk>
+<hunk line="55">
+ 			iterSetup := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseSetup)
+ 			iterTeardown := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseTeardown)
+
++			runCtx, stopRun := runner.NewDiagnoseRunContext(context.WithoutCancel(cmd.Context()))
++			defer stopRun()
++
+ 			state, start, resultsDir, runErr := runner.RunIterations(
+-				cmd.Context(),
++				runCtx,
+ 				conf,
+ 				out,
+ 				args,
+</hunk>
+<hunk line="70">
+
+ 			finishResourceCleanup(cmd, &runErr, cleanup)
+ 			if runErr != nil {
+-				if cmd.Context().Err() == nil {
++				if runCtx.Err() == nil {
+ 					return runErr
+ 				}
+ 			}
+
+-			return runner.FinishDiagnoseAnalysis(cmd.Context(), conf, out, args, state, start, resultsDir)
++			return runner.FinishDiagnoseAnalysis(runCtx, conf, out, args, state, start, resultsDir)
+ 		}),
+ 	}
+
+</hunk>
+</file>
+
+<file path="internal/cmd/root.go" status="modified" additions="5" deletions="4">
+<hunk line="66">
+ 	return rootCmd
+ }
+
+-// Execute runs the root command. A SIGINT or SIGTERM cancels the context so
+-// long-running subcommands (notably `diagnose`) can stop cleanly and still write
+-// their post-run analysis. A second signal hits the default handler and
+-// force-exits.
++// Execute runs the root command. A SIGINT or SIGTERM cancels cmd.Context() on
++// the first signal so generic subcommands (go test, gotestsum) stop promptly.
++// diagnose installs its own two-stage context: first signal finishes in-flight
++// iterations; second signal hard-cancels. A second root signal hits the default
++// handler and force-exits when diagnose is not running.
+ func Execute(opts ...hooks.Option) {
+ 	if err := runExecute(opts...); err != nil {
+ 		os.Exit(1)
+</hunk>
+</file>
+
+<file path="internal/runner/diagnose_cancel.go" status="added" additions="130" deletions="0">
+<hunk line="1">
++package runner
++
++import (
++	"context"
++	"os"
++	"os/signal"
++	"sync"
++	"sync/atomic"
++	"syscall"
++)
++
++type diagnoseCancelKey struct{}
++
++type diagnoseCancelState struct {
++	softStop   atomic.Bool
++	hardCancel context.CancelFunc
++	softStopCh chan struct{}
++	softOnce   sync.Once
++}
++
++// NewDiagnoseRunContext returns a context for diagnose iteration runs with
++// two-stage cancellation. The first SIGINT/SIGTERM requests a graceful stop
++// (finish in-flight iterations, do not enqueue new ones). The second signal
++// hard-cancels the context. Pass context.WithoutCancel(cmd.Context()) as parent
++// so the root CLI signal handler does not cancel iteration execution on the
++// first press.
++func NewDiagnoseRunContext(parent context.Context) (context.Context, func()) {
++	return newDiagnoseRunContext(parent, true)
++}
++
++// NewDiagnoseRunContextForTest is like NewDiagnoseRunContext but without OS
++// signal handling. Use in unit and synctest tests with RequestDiagnoseGracefulStop
++// and RequestDiagnoseHardCancel.
++func NewDiagnoseRunContextForTest(parent context.Context) (context.Context, func()) {
++	return newDiagnoseRunContext(parent, false)
++}
++
++func newDiagnoseRunContext(parent context.Context, listenSignals bool) (context.Context, func()) {
++	ctx, hardCancel := context.WithCancel(parent)
++	state := &diagnoseCancelState{
++		hardCancel: hardCancel,
++		softStopCh: make(chan struct{}),
++	}
++	ctx = context.WithValue(ctx, diagnoseCancelKey{}, state)
++
++	stop := func() {
++		hardCancel()
++	}
++
++	if !listenSignals {
++		return ctx, stop
++	}
++
++	sigCh := make(chan os.Signal, 2)
++	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
++
++	stop = func() {
++		signal.Stop(sigCh)
++		hardCancel()
++	}
++
++	go func() {
++		defer signal.Stop(sigCh)
++		for {
++			select {
++			case <-ctx.Done():
++				return
++			case <-sigCh:
++				state.requestGracefulStop()
++				select {
++				case <-sigCh:
++					hardCancel()
++					return
++				case <-ctx.Done():
++					return
++				}
++			}
++		}
++	}()
++
++	return ctx, stop
++}
++
++func (s *diagnoseCancelState) requestGracefulStop() {
++	s.softOnce.Do(func() {
++		s.softStop.Store(true)
++		close(s.softStopCh)
++	})
++}
++
++func diagnoseCancelFromContext(ctx context.Context) *diagnoseCancelState {
++	if ctx == nil {
++		return nil
++	}
++	state, _ := ctx.Value(diagnoseCancelKey{}).(*diagnoseCancelState)
++	return state
++}
++
++// DiagnoseGracefulStopChan returns a channel closed on the first graceful stop
++// request, or nil when ctx is not from NewDiagnoseRunContext.
++func DiagnoseGracefulStopChan(ctx context.Context) <-chan struct{} {
++	state := diagnoseCancelFromContext(ctx)
++	if state == nil {
++		return nil
++	}
++	return state.softStopCh
++}
++
++// DiagnoseGracefulStopRequested reports whether the user requested a graceful
++// stop (first Ctrl+C) on a context from NewDiagnoseRunContext.
++func DiagnoseGracefulStopRequested(ctx context.Context) bool {
++	state := diagnoseCancelFromContext(ctx)
++	return state != nil && state.softStop.Load()
++}
++
++// RequestDiagnoseGracefulStop simulates the first interrupt for tests.
++func RequestDiagnoseGracefulStop(ctx context.Context) {
++	state := diagnoseCancelFromContext(ctx)
++	if state != nil {
++		state.requestGracefulStop()
++	}
++}
++
++// RequestDiagnoseHardCancel simulates the second interrupt for tests.
++func RequestDiagnoseHardCancel(ctx context.Context) {
++	state := diagnoseCancelFromContext(ctx)
++	if state != nil {
++		state.hardCancel()
++	}
++}
+</hunk>
+</file>
+
+<file path="internal/runner/diagnose_cancel_test.go" status="added" additions="63" deletions="0">
+<hunk line="1">
++package runner
++
++import (
++	"context"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestDiagnoseGracefulStopRequested(t *testing.T) {
++	t.Parallel()
++
++	t.Run("background", func(t *testing.T) {
++		t.Parallel()
++		assert.False(t, DiagnoseGracefulStopRequested(context.Background()))
++	})
++
++	t.Run("diagnose_context_before_signal", func(t *testing.T) {
++		t.Parallel()
++		ctx, stop := NewDiagnoseRunContext(context.Background())
++		defer stop()
++		assert.False(t, DiagnoseGracefulStopRequested(ctx))
++	})
++
++	t.Run("diagnose_context_after_graceful_request", func(t *testing.T) {
++		t.Parallel()
++		ctx, stop := NewDiagnoseRunContext(context.Background())
++		defer stop()
++		RequestDiagnoseGracefulStop(ctx)
++		assert.True(t, DiagnoseGracefulStopRequested(ctx))
++	})
++}
++
++func TestDiagnoseHardCancel(t *testing.T) {
++	t.Parallel()
++	ctx, stop := NewDiagnoseRunContext(context.Background())
++	defer stop()
++
++	RequestDiagnoseHardCancel(ctx)
++	require.Error(t, ctx.Err())
++	assert.False(t, DiagnoseGracefulStopRequested(ctx))
++}
++
++func TestDiagnoseGracefulThenHardCancel(t *testing.T) {
++	t.Parallel()
++	ctx, stop := NewDiagnoseRunContext(context.Background())
++	defer stop()
++
++	RequestDiagnoseGracefulStop(ctx)
++	assert.True(t, DiagnoseGracefulStopRequested(ctx))
++	require.NoError(t, ctx.Err())
++
++	RequestDiagnoseHardCancel(ctx)
++	require.Error(t, ctx.Err())
++}
++
++func TestDiagnoseRunContextStopTearsDown(t *testing.T) {
++	t.Parallel()
++	ctx, stop := NewDiagnoseRunContext(context.Background())
++	stop()
++	require.Error(t, ctx.Err())
++}
+</hunk>
+</file>
+
+<file path="internal/runner/diagnose_output.go" status="modified" additions="28" deletions="0">
+<hunk line="5">
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"time"
+
+ 	"charm.land/lipgloss/v2"
+</hunk>
+<hunk line="155">
+ 	}
+ 	return filepath.Join(resultsDir, "report.csv")
+ }
++
++func diagnoseInterruptKeyHint() string {
++	if runtime.GOOS == "darwin" {
++		return "⌘C"
++	}
++	return "Ctrl+C"
++}
++
++func printDiagnoseGracefulStopNotice(out *output.Printer, completed, total int) {
++	if out == nil {
++		return
++	}
++	if out.AIOutput() {
++		out.Stderrf("stop_graceful completed=%d total=%d\n", completed, total)
++		return
++	}
++	out.ClearInline()
++	hint := diagnoseInterruptKeyHint()
++	out.HumanStderr(
++		termstyle.Accent.Render(
++			fmt.Sprintf("Stopping diagnose run after current iteration — %d/%d completed.", completed, total),
++		) + "\n" +
++			termstyle.Muted.Render(
++				fmt.Sprintf("Press %s again to cancel immediately.", hint),
++			),
++	)
++}
+</hunk>
+</file>
+
+<file path="internal/runner/runner.go" status="modified" additions="69" deletions="10">
+<hunk line="16">
+ 	"strconv"
+ 	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+
+ 	"github.com/smartcontractkit/testrig/internal/config"
+</hunk>
+<hunk line="62">
+ 	failedFast          bool
+ 	failedFastReason    string
+ 	failedFastIteration int // 0-based diagnose iteration index; -1 if unset
++	GracefulStop        bool
+ 	iterDurations       []time.Duration
+ 	shuffleSeeds        map[int]int64
+ 	liveProgress        bool
+</hunk>
+<hunk line="256">
+ }
+
+ func printDiagnoseInterruptions(ctx context.Context, conf *config.App, out *output.Printer, state *DiagnoseRunState) {
+-	interrupted := ctx.Err() != nil
+-	if interrupted && !out.AIOutput() {
+-		out.HumanStderr(
+-			termstyle.Accent.Render(
+-				fmt.Sprintf("interrupted after %d/%d iterations", state.completed, conf.Iterations),
+-			) +
+-				termstyle.Muted.Render(
+-					" — analyzing partial results…",
+-				),
+-		)
++	if state.GracefulStop {
++		if !out.AIOutput() {
++			out.HumanStderr(
++				termstyle.Accent.Render(
++					fmt.Sprintf("stopped early after %d/%d iterations", state.completed, conf.Iterations),
++				) +
++					termstyle.Muted.Render(
++						" — analyzing partial results…",
++					),
++			)
++		}
++	} else if interrupted := ctx.Err() != nil; interrupted {
++		if out.AIOutput() {
++			out.Stderrf("interrupted completed=%d total=%d\n", state.completed, conf.Iterations)
++		} else {
++			out.HumanStderr(
++				termstyle.Accent.Render(
++					fmt.Sprintf("interrupted after %d/%d iterations", state.completed, conf.Iterations),
++				) +
++					termstyle.Muted.Render(
++						" — analyzing partial results…",
++					),
++			)
++		}
+ 	}
+
+ 	if state.failedFast && !out.AIOutput() {
+</hunk>
+<hunk line="559">
+ 		serialProgressMu = new(sync.Mutex)
+ 	}
+
++	var inFlight atomic.Int32
+ 	worker := diagnoseWorker{
+ 		conf:             conf,
+ 		out:              out,
+</hunk>
+<hunk line="574">
+ 		jobs:             jobs,
+ 		results:          results,
+ 		cancel:           cancel,
++		inFlight:         &inFlight,
+ 	}
+ 	var wg sync.WaitGroup
+ 	for _, resource := range resources {
+</hunk>
+<hunk line="585">
+
+ 	wg.Go(func() {
+ 		defer close(jobs)
++		gracefulStopCh := DiagnoseGracefulStopChan(ctx)
+ 		for i := range conf.Iterations {
++			if DiagnoseGracefulStopRequested(ctx) {
++				return
++			}
++			if gracefulStopCh == nil {
++				select {
++				case <-runCtx.Done():
++					return
++				case jobs <- i:
++				}
++				continue
++			}
+ 			select {
+ 			case <-runCtx.Done():
+ 				return
++			case <-gracefulStopCh:
++				return
+ 			case jobs <- i:
+ 			}
+ 		}
+</hunk>
+<hunk line="614">
+ 	}()
+
+ 	var firstErr error
++	var gracefulStopNotice sync.Once
++	maybePrintGracefulStopNotice := func() {
++		if !DiagnoseGracefulStopRequested(ctx) || inFlight.Load() > 0 {
++			return
++		}
++		gracefulStopNotice.Do(func() {
++			state.GracefulStop = true
++			printDiagnoseGracefulStopNotice(out, state.completed, conf.Iterations)
++		})
++	}
++
+ 	for result := range results {
+ 		if result.fatalErr != nil {
+ 			if firstErr == nil {
+</hunk>
+<hunk line="634">
+ 			continue
+ 		}
+ 		recordDiagnoseIterationResult(state, result, conf, out, parallelProgress, serialProgressMu)
++		maybePrintGracefulStopNotice()
+ 	}
++	maybePrintGracefulStopNotice()
+ 	return state, firstErr
+ }
+
+</hunk>
+<hunk line="657">
+ 	jobs             <-chan int
+ 	results          chan<- diagnoseIterationResult
+ 	cancel           context.CancelFunc
++	inFlight         *atomic.Int32
+ }
+
+ func (w *diagnoseWorker) run(runCtx context.Context, resource diagnoseIterationResource) {
+ 	used := false
+ 	for iteration := range w.jobs {
++		stopInFlight := w.trackInFlight()
+ 		if runCtx.Err() != nil {
++			stopInFlight()
+ 			return
+ 		}
+ 		if used && resource.Reset != nil {
+ 			if err := resource.Reset(runCtx); err != nil {
++				stopInFlight()
+ 				if runCtx.Err() != nil {
+ 					return
+ 				}
+</hunk>
+<hunk line="681">
+ 		used = true
+ 		if w.hooks.iterationSetup != nil {
+ 			if err := w.hooks.iterationSetup(runCtx); err != nil {
++				stopInFlight()
+ 				w.sendFatal(runCtx, iteration, fmt.Errorf("iteration setup %d: %w", iteration, err))
+ 				return
+ 			}
+</hunk>
+<hunk line="732">
+ 			digest:     digest,
+ 			digestErr:  digestErr,
+ 		}
++		stopInFlight()
+ 		select {
+ 		case w.results <- result:
+ 		case <-runCtx.Done():
+</hunk>
+<hunk line="744">
+ 	}
+ }
+
++func (w *diagnoseWorker) trackInFlight() func() {
++	if w.inFlight == nil {
++		return func() {}
++	}
++	w.inFlight.Add(1)
++	return func() { w.inFlight.Add(-1) }
++}
++
+ // sendFatal posts a fatal iteration result and cancels the run. The select
+ // guards against ctx cancellation racing the send.
+ func (w *diagnoseWorker) sendFatal(runCtx context.Context, iteration int, err error) {
+</hunk>
+</file>
+
+<file path="internal/runner/runner_test.go" status="modified" additions="259" deletions="0">
+<hunk line="12">
+ 	"sync"
+ 	"sync/atomic"
+ 	"testing"
++	"testing/synctest"
+ 	"time"
+
+ 	"github.com/stretchr/testify/assert"
+</hunk>
+<hunk line="1328">
+ 	assert.True(t, setupBeforeTeardown.Load(), "setup must be called before teardown")
+ }
+
++func writePassIterationJSONL(t *testing.T, resultsDir string, iteration int) {
++	t.Helper()
++	require.NoError(
++		t,
++		os.WriteFile(
++			filepath.Join(resultsDir, "iteration-"+strconv.Itoa(iteration)+".log.jsonl"),
++			[]byte(`{"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}`+"\n"),
++			0600,
++		),
++	)
++}
++
++func TestRunDiagnoseIterations_gracefulStop_finishesInFlight(t *testing.T) {
++	t.Parallel()
++	synctest.Test(t, func(t *testing.T) {
++		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
++		defer stop()
++
++		resultsDir := t.TempDir()
++		conf := &config.App{
++			RepoRoot:   makeTestRepoRoot(t),
++			AIOutput:   true,
++			Iterations: 5,
++		}
++		out := output.NewForTest(true, io.Discard, io.Discard, false)
++
++		var mu sync.Mutex
++		started := make(map[int]struct{})
++		hooks := diagnoseRunHooks{
++			runIteration: func(runCtx context.Context, p diagnoseIterationParams) error {
++				mu.Lock()
++				started[p.Iteration] = struct{}{}
++				mu.Unlock()
++				if p.Iteration == 0 {
++					RequestDiagnoseGracefulStop(runCtx)
++					time.Sleep(1 * time.Second)
++				}
++				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
++				return nil
++			},
++		}
++
++		state, err := runDiagnoseIterations(
++			ctx,
++			conf,
++			out,
++			resultsDir,
++			[]string{"./pkg"},
++			[]diagnoseIterationResource{{}},
++			hooks,
++		)
++		require.NoError(t, err)
++		assert.Equal(t, 1, state.completed)
++		assert.True(t, state.GracefulStop)
++		assert.Len(t, started, 1)
++	})
++}
++
++func TestRunDiagnoseIterations_gracefulStop_printsNoticeAfterDigest(t *testing.T) {
++	t.Parallel()
++	synctest.Test(t, func(t *testing.T) {
++		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
++		defer stop()
++
++		resultsDir := t.TempDir()
++		conf := &config.App{
++			RepoRoot:   makeTestRepoRoot(t),
++			AIOutput:   false,
++			Iterations: 3,
++		}
++		var stderr strings.Builder
++		out := output.NewForTest(false, io.Discard, &stderr, false)
++
++		hooks := diagnoseRunHooks{
++			runIteration: func(runCtx context.Context, p diagnoseIterationParams) error {
++				if p.Iteration == 0 {
++					RequestDiagnoseGracefulStop(runCtx)
++				}
++				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
++				return nil
++			},
++		}
++
++		state, err := runDiagnoseIterations(
++			ctx,
++			conf,
++			out,
++			resultsDir,
++			[]string{"./pkg"},
++			[]diagnoseIterationResource{{}},
++			hooks,
++		)
++		require.NoError(t, err)
++		assert.True(t, state.GracefulStop)
++		assert.Contains(t, stderr.String(), "Stopping diagnose run after current iteration")
++		assert.Contains(t, stderr.String(), "again to cancel immediately")
++	})
++}
++
++func TestRunDiagnoseIterations_gracefulStop_idleBetweenIterations(t *testing.T) {
++	t.Parallel()
++	synctest.Test(t, func(t *testing.T) {
++		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
++		defer stop()
++
++		resultsDir := t.TempDir()
++		conf := &config.App{
++			RepoRoot:   makeTestRepoRoot(t),
++			AIOutput:   true,
++			Iterations: 3,
++		}
++		out := output.NewForTest(true, io.Discard, io.Discard, false)
++
++		iter0Done := make(chan struct{})
++		iter0Release := make(chan struct{})
++		hooks := diagnoseRunHooks{
++			runIteration: func(_ context.Context, p diagnoseIterationParams) error {
++				if p.Iteration == 0 {
++					writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
++					close(iter0Done)
++					<-iter0Release
++					return nil
++				}
++				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
++				return nil
++			},
++		}
++
++		var state *DiagnoseRunState
++		var runErr error
++		go func() {
++			state, runErr = runDiagnoseIterations(
++				ctx,
++				conf,
++				out,
++				resultsDir,
++				[]string{"./pkg"},
++				[]diagnoseIterationResource{{}},
++				hooks,
++			)
++		}()
++
++		<-iter0Done
++		RequestDiagnoseGracefulStop(ctx)
++		close(iter0Release)
++		synctest.Wait()
++
++		require.NoError(t, runErr)
++		require.NotNil(t, state)
++		assert.Equal(t, 1, state.completed)
++		assert.True(t, state.GracefulStop)
++	})
++}
++
++func TestRunDiagnoseIterations_hardCancel_abortsInFlight(t *testing.T) {
++	t.Parallel()
++	synctest.Test(t, func(t *testing.T) {
++		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
++		defer stop()
++
++		resultsDir := t.TempDir()
++		conf := &config.App{
++			RepoRoot:   makeTestRepoRoot(t),
++			AIOutput:   true,
++			Iterations: 3,
++		}
++		out := output.NewForTest(true, io.Discard, io.Discard, false)
++
++		iter0Blocked := make(chan struct{})
++		hooks := diagnoseRunHooks{
++			runIteration: func(runCtx context.Context, p diagnoseIterationParams) error {
++				if p.Iteration == 0 {
++					close(iter0Blocked)
++					<-runCtx.Done()
++					return runCtx.Err()
++				}
++				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
++				return nil
++			},
++		}
++
++		var state *DiagnoseRunState
++		var runErr error
++		go func() {
++			state, runErr = runDiagnoseIterations(
++				ctx,
++				conf,
++				out,
++				resultsDir,
++				[]string{"./pkg"},
++				[]diagnoseIterationResource{{}},
++				hooks,
++			)
++		}()
++
++		<-iter0Blocked
++		RequestDiagnoseHardCancel(ctx)
++		synctest.Wait()
++
++		require.NoError(t, runErr)
++		require.NotNil(t, state)
++		assert.Less(t, state.completed, conf.Iterations)
++		assert.False(t, state.GracefulStop)
++		require.Error(t, ctx.Err())
++	})
++}
++
++func TestDiagnoseGracefulStop_writesPartialReport(t *testing.T) {
++	t.Parallel()
++	synctest.Test(t, func(t *testing.T) {
++		repoRoot := makeTestRepoRoot(t)
++		conf := &config.App{
++			RepoRoot:   repoRoot,
++			AIOutput:   true,
++			Iterations: 4,
++		}
++		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
++		defer stop()
++		out := output.NewForTest(conf.AIOutput, io.Discard, io.Discard, false)
++
++		resultsDir := t.TempDir()
++		start := time.Now()
++		hooks := diagnoseRunHooks{
++			runIteration: func(runCtx context.Context, p diagnoseIterationParams) error {
++				if p.Iteration == 1 {
++					RequestDiagnoseGracefulStop(runCtx)
++				}
++				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
++				return nil
++			},
++		}
++
++		state, err := runDiagnoseIterations(
++			ctx,
++			conf,
++			out,
++			resultsDir,
++			[]string{"./pkg"},
++			[]diagnoseIterationResource{{}},
++			hooks,
++		)
++		require.NoError(t, err)
++		require.True(t, state.GracefulStop)
++		require.Equal(t, 2, state.completed)
++
++		require.NoError(t, writeRunState(resultsDir, conf, []string{"./pkg"}, state, start))
++		require.NoError(t, FinishDiagnoseAnalysis(ctx, conf, out, []string{"./pkg"}, state, start, resultsDir))
++
++		//nolint:gosec // G304: path from filepath.Join
++		reportBytes, err := os.ReadFile(filepath.Join(resultsDir, "report.json"))
++		require.NoError(t, err)
++		var rep Report
++		require.NoError(t, json.Unmarshal(reportBytes, &rep))
++		assert.Equal(t, 2, rep.Iterations)
++		assert.Len(t, rep.IterationSummaries, 2)
++	})
++}
++
+ func makeTestRepoRoot(t *testing.T) string {
+ 	d := t.TempDir()
+ 	err := os.WriteFile(filepath.Join(d, "go.mod"), []byte("module test\n"), 0600)
+</hunk>
+</file>
+
+</diff>
+</pr>

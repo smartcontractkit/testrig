@@ -663,85 +663,94 @@ type diagnoseWorker struct {
 func (w *diagnoseWorker) run(runCtx context.Context, resource diagnoseIterationResource) {
 	used := false
 	for iteration := range w.jobs {
-		stopInFlight := w.trackInFlight()
-		if runCtx.Err() != nil {
-			stopInFlight()
-			return
-		}
-		if used && resource.Reset != nil {
-			if err := resource.Reset(runCtx); err != nil {
-				stopInFlight()
-				if runCtx.Err() != nil {
-					return
-				}
-				w.sendFatal(runCtx, iteration, fmt.Errorf("reset database before iteration %d: %w", iteration, err))
-				return
-			}
-		}
-		used = true
-		if w.hooks.iterationSetup != nil {
-			if err := w.hooks.iterationSetup(runCtx); err != nil {
-				stopInFlight()
-				w.sendFatal(runCtx, iteration, fmt.Errorf("iteration setup %d: %w", iteration, err))
-				return
-			}
-		}
-		var seed int64
-		if w.conf.Shuffle {
-			seed = w.hooks.seed()
-		}
-		iterStart := time.Now()
-		iterErr := w.hooks.runIteration(runCtx, diagnoseIterationParams{
-			Conf:             w.conf,
-			Out:              w.out,
-			ResultsDir:       w.resultsDir,
-			GoTestArgs:       w.goTestArgs,
-			ModuleDir:        w.moduleDir,
-			Iteration:        iteration,
-			ShuffleSeed:      seed,
-			Env:              resource.Env,
-			LiveProgress:     w.parallel == 1,
-			ParallelProgress: w.parallelProgress,
-			DiagnoseRunStart: w.diagnoseRunStart,
-			SerialProgressMu: w.serialProgressMu,
-		})
-		iterDur := time.Since(iterStart)
-		if w.hooks.iterationTeardown != nil {
-			if tdErr := w.hooks.iterationTeardown(runCtx); tdErr != nil && iterErr == nil {
-				iterErr = fmt.Errorf("iteration teardown %d: %w", iteration, tdErr)
-			}
-		}
-		var dumpErr error
-		if resource.DumpDiagnostics != nil {
-			dumpErr = resource.DumpDiagnostics(runCtx, w.resultsDir, iteration)
-		}
-		digest, digestErr := loadIterationDigest(w.resultsDir, iteration, w.conf.SlowThreshold)
-		failedFast, failReason := shouldFailFastIteration(w.conf, iterErr, digest, digestErr)
-		failedFast = failedFast && runCtx.Err() == nil
-		if failedFast {
-			w.cancel()
-		}
-		result := diagnoseIterationResult{
-			iteration:  iteration,
-			duration:   iterDur,
-			shuffle:    seed,
-			iterErr:    iterErr,
-			dumpErr:    dumpErr,
-			failedFast: failedFast,
-			failReason: failReason,
-			digest:     digest,
-			digestErr:  digestErr,
-		}
-		stopInFlight()
-		select {
-		case w.results <- result:
-		case <-runCtx.Done():
-			if failedFast {
-				w.results <- result
-			}
+		done := w.runIterationJob(runCtx, resource, iteration, &used)
+		if done {
 			return
 		}
 	}
+}
+
+func (w *diagnoseWorker) runIterationJob(
+	runCtx context.Context,
+	resource diagnoseIterationResource,
+	iteration int,
+	used *bool,
+) bool {
+	defer w.trackInFlight()()
+	if runCtx.Err() != nil {
+		return true
+	}
+	if *used && resource.Reset != nil {
+		if err := resource.Reset(runCtx); err != nil {
+			if runCtx.Err() != nil {
+				return true
+			}
+			w.sendFatal(runCtx, iteration, fmt.Errorf("reset database before iteration %d: %w", iteration, err))
+			return true
+		}
+	}
+	*used = true
+	if w.hooks.iterationSetup != nil {
+		if err := w.hooks.iterationSetup(runCtx); err != nil {
+			w.sendFatal(runCtx, iteration, fmt.Errorf("iteration setup %d: %w", iteration, err))
+			return true
+		}
+	}
+	var seed int64
+	if w.conf.Shuffle {
+		seed = w.hooks.seed()
+	}
+	iterStart := time.Now()
+	iterErr := w.hooks.runIteration(runCtx, diagnoseIterationParams{
+		Conf:             w.conf,
+		Out:              w.out,
+		ResultsDir:       w.resultsDir,
+		GoTestArgs:       w.goTestArgs,
+		ModuleDir:        w.moduleDir,
+		Iteration:        iteration,
+		ShuffleSeed:      seed,
+		Env:              resource.Env,
+		LiveProgress:     w.parallel == 1,
+		ParallelProgress: w.parallelProgress,
+		DiagnoseRunStart: w.diagnoseRunStart,
+		SerialProgressMu: w.serialProgressMu,
+	})
+	iterDur := time.Since(iterStart)
+	if w.hooks.iterationTeardown != nil {
+		if tdErr := w.hooks.iterationTeardown(runCtx); tdErr != nil && iterErr == nil {
+			iterErr = fmt.Errorf("iteration teardown %d: %w", iteration, tdErr)
+		}
+	}
+	var dumpErr error
+	if resource.DumpDiagnostics != nil {
+		dumpErr = resource.DumpDiagnostics(runCtx, w.resultsDir, iteration)
+	}
+	digest, digestErr := loadIterationDigest(w.resultsDir, iteration, w.conf.SlowThreshold)
+	failedFast, failReason := shouldFailFastIteration(w.conf, iterErr, digest, digestErr)
+	failedFast = failedFast && runCtx.Err() == nil
+	if failedFast {
+		w.cancel()
+	}
+	result := diagnoseIterationResult{
+		iteration:  iteration,
+		duration:   iterDur,
+		shuffle:    seed,
+		iterErr:    iterErr,
+		dumpErr:    dumpErr,
+		failedFast: failedFast,
+		failReason: failReason,
+		digest:     digest,
+		digestErr:  digestErr,
+	}
+	select {
+	case w.results <- result:
+	case <-runCtx.Done():
+		if failedFast {
+			w.results <- result
+		}
+		return true
+	}
+	return false
 }
 
 func (w *diagnoseWorker) trackInFlight() func() {
