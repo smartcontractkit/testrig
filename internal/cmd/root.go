@@ -66,10 +66,11 @@ func NewRootCommand(runnerOpts hooks.RunOptions) *cobra.Command {
 	return rootCmd
 }
 
-// Execute runs the root command. A SIGINT or SIGTERM cancels the context so
-// long-running subcommands (notably `diagnose`) can stop cleanly and still write
-// their post-run analysis. A second signal hits the default handler and
-// force-exits.
+// Execute runs the root command. A SIGINT or SIGTERM cancels cmd.Context() on
+// the first signal so generic subcommands (go test, gotestsum) stop promptly.
+// diagnose installs its own two-stage context: first signal finishes in-flight
+// iterations; second signal hard-cancels. A second root signal hits the default
+// handler and force-exits when diagnose is not running.
 func Execute(opts ...hooks.Option) {
 	if err := runExecute(opts...); err != nil {
 		os.Exit(1)

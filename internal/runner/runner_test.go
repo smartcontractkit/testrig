@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -1325,6 +1326,264 @@ func TestRunDiagnoseIterationsCallsIterationHooks(t *testing.T) {
 	assert.Equal(t, int32(3), setupCalls.Load(), "setup called once per iteration")
 	assert.Equal(t, int32(3), teardownCalls.Load(), "teardown called once per iteration")
 	assert.True(t, setupBeforeTeardown.Load(), "setup must be called before teardown")
+}
+
+func writePassIterationJSONL(t *testing.T, resultsDir string, iteration int) {
+	t.Helper()
+	require.NoError(
+		t,
+		os.WriteFile(
+			filepath.Join(resultsDir, "iteration-"+strconv.Itoa(iteration)+".log.jsonl"),
+			[]byte(`{"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}`+"\n"),
+			0600,
+		),
+	)
+}
+
+func TestRunDiagnoseIterations_gracefulStop_finishesInFlight(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
+		defer stop()
+
+		resultsDir := t.TempDir()
+		conf := &config.App{
+			RepoRoot:   makeTestRepoRoot(t),
+			AIOutput:   true,
+			Iterations: 5,
+		}
+		out := output.NewForTest(true, io.Discard, io.Discard, false)
+
+		var mu sync.Mutex
+		started := make(map[int]struct{})
+		hooks := diagnoseRunHooks{
+			runIteration: func(runCtx context.Context, p diagnoseIterationParams) error {
+				mu.Lock()
+				started[p.Iteration] = struct{}{}
+				mu.Unlock()
+				if p.Iteration == 0 {
+					RequestDiagnoseGracefulStop(runCtx)
+					time.Sleep(1 * time.Second)
+				}
+				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
+				return nil
+			},
+		}
+
+		state, err := runDiagnoseIterations(
+			ctx,
+			conf,
+			out,
+			resultsDir,
+			[]string{"./pkg"},
+			[]diagnoseIterationResource{{}},
+			hooks,
+		)
+		require.NoError(t, err)
+		assert.Equal(t, 1, state.completed)
+		assert.True(t, state.GracefulStop)
+		assert.Len(t, started, 1)
+	})
+}
+
+func TestRunDiagnoseIterations_gracefulStop_printsNoticeAfterDigest(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
+		defer stop()
+
+		resultsDir := t.TempDir()
+		conf := &config.App{
+			RepoRoot:   makeTestRepoRoot(t),
+			AIOutput:   false,
+			Iterations: 3,
+		}
+		var stderr strings.Builder
+		out := output.NewForTest(false, io.Discard, &stderr, false)
+
+		hooks := diagnoseRunHooks{
+			runIteration: func(runCtx context.Context, p diagnoseIterationParams) error {
+				if p.Iteration == 0 {
+					RequestDiagnoseGracefulStop(runCtx)
+				}
+				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
+				return nil
+			},
+		}
+
+		state, err := runDiagnoseIterations(
+			ctx,
+			conf,
+			out,
+			resultsDir,
+			[]string{"./pkg"},
+			[]diagnoseIterationResource{{}},
+			hooks,
+		)
+		require.NoError(t, err)
+		assert.True(t, state.GracefulStop)
+		assert.Contains(t, stderr.String(), "Stopping diagnose run after current iteration")
+		assert.Contains(t, stderr.String(), "again to cancel immediately")
+	})
+}
+
+func TestRunDiagnoseIterations_gracefulStop_idleBetweenIterations(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
+		defer stop()
+
+		resultsDir := t.TempDir()
+		conf := &config.App{
+			RepoRoot:   makeTestRepoRoot(t),
+			AIOutput:   true,
+			Iterations: 3,
+		}
+		out := output.NewForTest(true, io.Discard, io.Discard, false)
+
+		iter0Done := make(chan struct{})
+		iter0Release := make(chan struct{})
+		hooks := diagnoseRunHooks{
+			runIteration: func(_ context.Context, p diagnoseIterationParams) error {
+				if p.Iteration == 0 {
+					writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
+					close(iter0Done)
+					<-iter0Release
+					return nil
+				}
+				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
+				return nil
+			},
+		}
+
+		var state *DiagnoseRunState
+		var runErr error
+		go func() {
+			state, runErr = runDiagnoseIterations(
+				ctx,
+				conf,
+				out,
+				resultsDir,
+				[]string{"./pkg"},
+				[]diagnoseIterationResource{{}},
+				hooks,
+			)
+		}()
+
+		<-iter0Done
+		RequestDiagnoseGracefulStop(ctx)
+		close(iter0Release)
+		synctest.Wait()
+
+		require.NoError(t, runErr)
+		require.NotNil(t, state)
+		assert.Equal(t, 1, state.completed)
+		assert.True(t, state.GracefulStop)
+	})
+}
+
+func TestRunDiagnoseIterations_hardCancel_abortsInFlight(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
+		defer stop()
+
+		resultsDir := t.TempDir()
+		conf := &config.App{
+			RepoRoot:   makeTestRepoRoot(t),
+			AIOutput:   true,
+			Iterations: 3,
+		}
+		out := output.NewForTest(true, io.Discard, io.Discard, false)
+
+		iter0Blocked := make(chan struct{})
+		hooks := diagnoseRunHooks{
+			runIteration: func(runCtx context.Context, p diagnoseIterationParams) error {
+				if p.Iteration == 0 {
+					close(iter0Blocked)
+					<-runCtx.Done()
+					return runCtx.Err()
+				}
+				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
+				return nil
+			},
+		}
+
+		var state *DiagnoseRunState
+		var runErr error
+		go func() {
+			state, runErr = runDiagnoseIterations(
+				ctx,
+				conf,
+				out,
+				resultsDir,
+				[]string{"./pkg"},
+				[]diagnoseIterationResource{{}},
+				hooks,
+			)
+		}()
+
+		<-iter0Blocked
+		RequestDiagnoseHardCancel(ctx)
+		synctest.Wait()
+
+		require.NoError(t, runErr)
+		require.NotNil(t, state)
+		assert.Less(t, state.completed, conf.Iterations)
+		assert.False(t, state.GracefulStop)
+		require.Error(t, ctx.Err())
+	})
+}
+
+func TestDiagnoseGracefulStop_writesPartialReport(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		repoRoot := makeTestRepoRoot(t)
+		conf := &config.App{
+			RepoRoot:   repoRoot,
+			AIOutput:   true,
+			Iterations: 4,
+		}
+		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
+		defer stop()
+		out := output.NewForTest(conf.AIOutput, io.Discard, io.Discard, false)
+
+		resultsDir := t.TempDir()
+		start := time.Now()
+		hooks := diagnoseRunHooks{
+			runIteration: func(runCtx context.Context, p diagnoseIterationParams) error {
+				if p.Iteration == 1 {
+					RequestDiagnoseGracefulStop(runCtx)
+				}
+				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
+				return nil
+			},
+		}
+
+		state, err := runDiagnoseIterations(
+			ctx,
+			conf,
+			out,
+			resultsDir,
+			[]string{"./pkg"},
+			[]diagnoseIterationResource{{}},
+			hooks,
+		)
+		require.NoError(t, err)
+		require.True(t, state.GracefulStop)
+		require.Equal(t, 2, state.completed)
+
+		require.NoError(t, writeRunState(resultsDir, conf, []string{"./pkg"}, state, start))
+		require.NoError(t, FinishDiagnoseAnalysis(ctx, conf, out, []string{"./pkg"}, state, start, resultsDir))
+
+		//nolint:gosec // G304: path from filepath.Join
+		reportBytes, err := os.ReadFile(filepath.Join(resultsDir, "report.json"))
+		require.NoError(t, err)
+		var rep Report
+		require.NoError(t, json.Unmarshal(reportBytes, &rep))
+		assert.Equal(t, 2, rep.Iterations)
+		assert.Len(t, rep.IterationSummaries, 2)
+	})
 }
 
 func makeTestRepoRoot(t *testing.T) string {

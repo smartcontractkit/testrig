@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -54,8 +55,11 @@ Do not pass go test -trace; use diagnose --trace instead. With --shuffle-seed, a
 			iterSetup := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseSetup)
 			iterTeardown := hooks.BuildIterationHook(runnerOpts, shell, hooks.PhaseTeardown)
 
+			runCtx, stopRun := runner.NewDiagnoseRunContext(context.WithoutCancel(cmd.Context()))
+			defer stopRun()
+
 			state, start, resultsDir, runErr := runner.RunIterations(
-				cmd.Context(),
+				runCtx,
 				conf,
 				out,
 				args,
@@ -66,12 +70,12 @@ Do not pass go test -trace; use diagnose --trace instead. With --shuffle-seed, a
 
 			finishResourceCleanup(cmd, &runErr, cleanup)
 			if runErr != nil {
-				if cmd.Context().Err() == nil {
+				if runCtx.Err() == nil {
 					return runErr
 				}
 			}
 
-			return runner.FinishDiagnoseAnalysis(cmd.Context(), conf, out, args, state, start, resultsDir)
+			return runner.FinishDiagnoseAnalysis(runCtx, conf, out, args, state, start, resultsDir)
 		}),
 	}
 

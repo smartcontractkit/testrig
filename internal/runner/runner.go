@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/smartcontractkit/testrig/internal/config"
@@ -61,6 +62,7 @@ type DiagnoseRunState struct {
 	failedFast          bool
 	failedFastReason    string
 	failedFastIteration int // 0-based diagnose iteration index; -1 if unset
+	GracefulStop        bool
 	iterDurations       []time.Duration
 	shuffleSeeds        map[int]int64
 	liveProgress        bool
@@ -254,16 +256,30 @@ func FinishDiagnoseAnalysis(
 }
 
 func printDiagnoseInterruptions(ctx context.Context, conf *config.App, out *output.Printer, state *DiagnoseRunState) {
-	interrupted := ctx.Err() != nil
-	if interrupted && !out.AIOutput() {
-		out.HumanStderr(
-			termstyle.Accent.Render(
-				fmt.Sprintf("interrupted after %d/%d iterations", state.completed, conf.Iterations),
-			) +
-				termstyle.Muted.Render(
-					" — analyzing partial results…",
-				),
-		)
+	if state.GracefulStop {
+		if !out.AIOutput() {
+			out.HumanStderr(
+				termstyle.Accent.Render(
+					fmt.Sprintf("stopped early after %d/%d iterations", state.completed, conf.Iterations),
+				) +
+					termstyle.Muted.Render(
+						" — analyzing partial results…",
+					),
+			)
+		}
+	} else if interrupted := ctx.Err() != nil; interrupted {
+		if out.AIOutput() {
+			out.Stderrf("interrupted completed=%d total=%d\n", state.completed, conf.Iterations)
+		} else {
+			out.HumanStderr(
+				termstyle.Accent.Render(
+					fmt.Sprintf("interrupted after %d/%d iterations", state.completed, conf.Iterations),
+				) +
+					termstyle.Muted.Render(
+						" — analyzing partial results…",
+					),
+			)
+		}
 	}
 
 	if state.failedFast && !out.AIOutput() {
@@ -543,6 +559,7 @@ func runDiagnoseIterations(
 		serialProgressMu = new(sync.Mutex)
 	}
 
+	var inFlight atomic.Int32
 	worker := diagnoseWorker{
 		conf:             conf,
 		out:              out,
@@ -557,6 +574,7 @@ func runDiagnoseIterations(
 		jobs:             jobs,
 		results:          results,
 		cancel:           cancel,
+		inFlight:         &inFlight,
 	}
 	var wg sync.WaitGroup
 	for _, resource := range resources {
@@ -567,9 +585,23 @@ func runDiagnoseIterations(
 
 	wg.Go(func() {
 		defer close(jobs)
+		gracefulStopCh := DiagnoseGracefulStopChan(ctx)
 		for i := range conf.Iterations {
+			if DiagnoseGracefulStopRequested(ctx) {
+				return
+			}
+			if gracefulStopCh == nil {
+				select {
+				case <-runCtx.Done():
+					return
+				case jobs <- i:
+				}
+				continue
+			}
 			select {
 			case <-runCtx.Done():
+				return
+			case <-gracefulStopCh:
 				return
 			case jobs <- i:
 			}
@@ -582,6 +614,17 @@ func runDiagnoseIterations(
 	}()
 
 	var firstErr error
+	var gracefulStopNotice sync.Once
+	maybePrintGracefulStopNotice := func() {
+		if !DiagnoseGracefulStopRequested(ctx) || inFlight.Load() > 0 {
+			return
+		}
+		gracefulStopNotice.Do(func() {
+			state.GracefulStop = true
+			printDiagnoseGracefulStopNotice(out, state.completed, conf.Iterations)
+		})
+	}
+
 	for result := range results {
 		if result.fatalErr != nil {
 			if firstErr == nil {
@@ -591,7 +634,9 @@ func runDiagnoseIterations(
 			continue
 		}
 		recordDiagnoseIterationResult(state, result, conf, out, parallelProgress, serialProgressMu)
+		maybePrintGracefulStopNotice()
 	}
+	maybePrintGracefulStopNotice()
 	return state, firstErr
 }
 
@@ -612,85 +657,108 @@ type diagnoseWorker struct {
 	jobs             <-chan int
 	results          chan<- diagnoseIterationResult
 	cancel           context.CancelFunc
+	inFlight         *atomic.Int32
 }
 
 func (w *diagnoseWorker) run(runCtx context.Context, resource diagnoseIterationResource) {
 	used := false
 	for iteration := range w.jobs {
-		if runCtx.Err() != nil {
-			return
-		}
-		if used && resource.Reset != nil {
-			if err := resource.Reset(runCtx); err != nil {
-				if runCtx.Err() != nil {
-					return
-				}
-				w.sendFatal(runCtx, iteration, fmt.Errorf("reset database before iteration %d: %w", iteration, err))
-				return
-			}
-		}
-		used = true
-		if w.hooks.iterationSetup != nil {
-			if err := w.hooks.iterationSetup(runCtx); err != nil {
-				w.sendFatal(runCtx, iteration, fmt.Errorf("iteration setup %d: %w", iteration, err))
-				return
-			}
-		}
-		var seed int64
-		if w.conf.Shuffle {
-			seed = w.hooks.seed()
-		}
-		iterStart := time.Now()
-		iterErr := w.hooks.runIteration(runCtx, diagnoseIterationParams{
-			Conf:             w.conf,
-			Out:              w.out,
-			ResultsDir:       w.resultsDir,
-			GoTestArgs:       w.goTestArgs,
-			ModuleDir:        w.moduleDir,
-			Iteration:        iteration,
-			ShuffleSeed:      seed,
-			Env:              resource.Env,
-			LiveProgress:     w.parallel == 1,
-			ParallelProgress: w.parallelProgress,
-			DiagnoseRunStart: w.diagnoseRunStart,
-			SerialProgressMu: w.serialProgressMu,
-		})
-		iterDur := time.Since(iterStart)
-		if w.hooks.iterationTeardown != nil {
-			if tdErr := w.hooks.iterationTeardown(runCtx); tdErr != nil && iterErr == nil {
-				iterErr = fmt.Errorf("iteration teardown %d: %w", iteration, tdErr)
-			}
-		}
-		var dumpErr error
-		if resource.DumpDiagnostics != nil {
-			dumpErr = resource.DumpDiagnostics(runCtx, w.resultsDir, iteration)
-		}
-		digest, digestErr := loadIterationDigest(w.resultsDir, iteration, w.conf.SlowThreshold)
-		failedFast, failReason := shouldFailFastIteration(w.conf, iterErr, digest, digestErr)
-		failedFast = failedFast && runCtx.Err() == nil
-		if failedFast {
-			w.cancel()
-		}
-		result := diagnoseIterationResult{
-			iteration:  iteration,
-			duration:   iterDur,
-			shuffle:    seed,
-			iterErr:    iterErr,
-			dumpErr:    dumpErr,
-			failedFast: failedFast,
-			failReason: failReason,
-			digest:     digest,
-			digestErr:  digestErr,
-		}
-		select {
-		case w.results <- result:
-		case <-runCtx.Done():
-			if failedFast {
-				w.results <- result
-			}
+		done := w.runIterationJob(runCtx, resource, iteration, &used)
+		if done {
 			return
 		}
 	}
+}
+
+func (w *diagnoseWorker) runIterationJob(
+	runCtx context.Context,
+	resource diagnoseIterationResource,
+	iteration int,
+	used *bool,
+) bool {
+	defer w.trackInFlight()()
+	if runCtx.Err() != nil {
+		return true
+	}
+	if *used && resource.Reset != nil {
+		if err := resource.Reset(runCtx); err != nil {
+			if runCtx.Err() != nil {
+				return true
+			}
+			w.sendFatal(runCtx, iteration, fmt.Errorf("reset database before iteration %d: %w", iteration, err))
+			return true
+		}
+	}
+	*used = true
+	if w.hooks.iterationSetup != nil {
+		if err := w.hooks.iterationSetup(runCtx); err != nil {
+			w.sendFatal(runCtx, iteration, fmt.Errorf("iteration setup %d: %w", iteration, err))
+			return true
+		}
+	}
+	var seed int64
+	if w.conf.Shuffle {
+		seed = w.hooks.seed()
+	}
+	iterStart := time.Now()
+	iterErr := w.hooks.runIteration(runCtx, diagnoseIterationParams{
+		Conf:             w.conf,
+		Out:              w.out,
+		ResultsDir:       w.resultsDir,
+		GoTestArgs:       w.goTestArgs,
+		ModuleDir:        w.moduleDir,
+		Iteration:        iteration,
+		ShuffleSeed:      seed,
+		Env:              resource.Env,
+		LiveProgress:     w.parallel == 1,
+		ParallelProgress: w.parallelProgress,
+		DiagnoseRunStart: w.diagnoseRunStart,
+		SerialProgressMu: w.serialProgressMu,
+	})
+	iterDur := time.Since(iterStart)
+	if w.hooks.iterationTeardown != nil {
+		if tdErr := w.hooks.iterationTeardown(runCtx); tdErr != nil && iterErr == nil {
+			iterErr = fmt.Errorf("iteration teardown %d: %w", iteration, tdErr)
+		}
+	}
+	var dumpErr error
+	if resource.DumpDiagnostics != nil {
+		dumpErr = resource.DumpDiagnostics(runCtx, w.resultsDir, iteration)
+	}
+	digest, digestErr := loadIterationDigest(w.resultsDir, iteration, w.conf.SlowThreshold)
+	failedFast, failReason := shouldFailFastIteration(w.conf, iterErr, digest, digestErr)
+	failedFast = failedFast && runCtx.Err() == nil
+	if failedFast {
+		w.cancel()
+	}
+	result := diagnoseIterationResult{
+		iteration:  iteration,
+		duration:   iterDur,
+		shuffle:    seed,
+		iterErr:    iterErr,
+		dumpErr:    dumpErr,
+		failedFast: failedFast,
+		failReason: failReason,
+		digest:     digest,
+		digestErr:  digestErr,
+	}
+	select {
+	case w.results <- result:
+	case <-runCtx.Done():
+		if failedFast {
+			w.results <- result
+		}
+		return true
+	}
+	return false
+}
+
+func (w *diagnoseWorker) trackInFlight() func() {
+	if w.inFlight == nil {
+		return func() {}
+	}
+	w.inFlight.Add(1)
+	return func() { w.inFlight.Add(-1) }
 }
 
 // sendFatal posts a fatal iteration result and cancels the run. The select
