@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -153,4 +154,31 @@ func diagnoseCSVPath(resultsDir string, rep *Report) string {
 		return ""
 	}
 	return filepath.Join(resultsDir, "report.csv")
+}
+
+func diagnoseInterruptKeyHint() string {
+	if runtime.GOOS == "darwin" {
+		return "⌘C"
+	}
+	return "Ctrl+C"
+}
+
+func printDiagnoseGracefulStopNotice(out *output.Printer, completed, total int) {
+	if out == nil {
+		return
+	}
+	if out.AIOutput() {
+		out.Stderrf("stop_graceful completed=%d total=%d\n", completed, total)
+		return
+	}
+	out.ClearInline()
+	hint := diagnoseInterruptKeyHint()
+	out.HumanStderr(
+		termstyle.Accent.Render(
+			fmt.Sprintf("Stopping diagnose run after current iteration — %d/%d completed.", completed, total),
+		) + "\n" +
+			termstyle.Muted.Render(
+				fmt.Sprintf("Press %s again to cancel immediately.", hint),
+			),
+	)
 }
