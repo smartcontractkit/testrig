@@ -2,15 +2,18 @@ package runner
 
 import (
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/smartcontractkit/testrig/internal/output"
+	"github.com/smartcontractkit/testrig/internal/termstyle"
 )
 
 var ansiEscapeSeq = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -84,4 +87,86 @@ func TestFormatDiagnoseIterationTableRow(t *testing.T) {
 			assert.Equal(t, tc.wantSans, got)
 		})
 	}
+}
+
+func TestFormatDiagnoseProblemTestsSuffix(t *testing.T) {
+	t.Parallel()
+	baseRowANSI := formatDiagnoseIterationTableRow(19, IterationDigest{
+		Result: "fail", RanTests: 8657, SkipTests: 103, FailTests: 4, TimeoutTests: 0, SlowTests: 14,
+	}, 3*time.Minute)
+	baseRow := stripANSI(baseRowANSI)
+	cases := []struct {
+		name      string
+		names     []string
+		cols      int
+		wantPlain string
+	}{
+		{
+			name:      "empty",
+			names:     nil,
+			cols:      120,
+			wantPlain: "",
+		},
+		{
+			name:      "two_names_wide",
+			names:     []string{"Testxxx", "Testyyy"},
+			cols:      120,
+			wantPlain: " (Testxxx, Testyyy)",
+		},
+		{
+			name:      "four_names_narrow",
+			names:     []string{"TestA", "TestB", "TestC", "TestD"},
+			cols:      ansi.StringWidth(baseRowANSI) + 24,
+			wantPlain: " (TestA, TestB, +2)",
+		},
+		{
+			name:      "long_name_truncated",
+			names:     []string{"TestVeryLongNameThatDoesNotFit"},
+			cols:      len(baseRow) + 20,
+			wantPlain: " (TestVeryLongName…)",
+		},
+		{
+			name:      "others_only_when_tight",
+			names:     []string{"TestA", "TestB", "TestC"},
+			cols:      len(baseRow) + len(" (+3)"),
+			wantPlain: " (+3)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatDiagnoseProblemTestsSuffix(tc.names, tc.cols, baseRowANSI, termstyle.Bad.Render)
+			if tc.wantPlain == "" {
+				assert.Empty(t, got)
+				return
+			}
+			assert.Equal(t, tc.wantPlain, stripANSI(got))
+			for _, name := range tc.names {
+				if strings.Contains(tc.wantPlain, name) {
+					assert.Contains(t, got, termstyle.Bad.Render(name))
+				}
+			}
+			require.LessOrEqual(t, ansi.StringWidth(baseRowANSI+got), tc.cols)
+		})
+	}
+}
+
+func TestPrintIterationDigestHuman_withFailingTests(t *testing.T) {
+	t.Parallel()
+	var stderr strings.Builder
+	out := output.NewForTest(false, io.Discard, &stderr, false)
+	out.SetTermColumnsForTest(120)
+
+	d := IterationDigest{
+		Result:       "fail",
+		RanTests:     10,
+		FailTests:    2,
+		FailingTests: []string{"Testxxx", "Testyyy"},
+	}
+	printIterationDigestHuman(out, 19, d, 3*time.Minute)
+
+	got := stderr.String()
+	require.Contains(t, got, termstyle.Bad.Render("Testxxx"))
+	require.Contains(t, got, termstyle.Bad.Render("Testyyy"))
+	require.Contains(t, stripANSI(got), stripANSI(formatDiagnoseIterationTableRow(19, d, 3*time.Minute)))
 }

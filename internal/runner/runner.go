@@ -1256,7 +1256,14 @@ func formatIterationDigestAI(iter, total int, d IterationDigest, dur time.Durati
 }
 
 func printIterationDigestHuman(out *output.Printer, iter int, d IterationDigest, dur time.Duration) {
-	out.HumanStderr(formatDiagnoseIterationTableRow(iter, d, dur))
+	row := formatDiagnoseIterationTableRow(iter, d, dur)
+	switch d.Result {
+	case "fail":
+		row += formatDiagnoseProblemTestsSuffix(d.FailingTests, out.TermColumns(), row, termstyle.Bad.Render)
+	case "timeout":
+		row += formatDiagnoseProblemTestsSuffix(d.TimedOutTests, out.TermColumns(), row, termstyle.Accent.Render)
+	}
+	out.HumanStderr(row)
 }
 
 func renderIterationResultHuman(r string) string {
