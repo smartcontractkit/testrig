@@ -15,15 +15,16 @@ import (
 // Printer writes CLI messages for tools/test. Child processes (go test) still
 // attach os.Stdout/os.Stderr directly where passthrough is intended.
 type Printer struct {
-	aiOutput        bool
-	stdout          io.Writer
-	stderr          io.Writer
-	stderrFD        uintptr
-	liveInline      bool // human mode and stderr is a TTY (safe for \r progress)
-	inlineLastLines int
-	inlineLastCols  int    // terminal width when inlineLastLine was drawn
-	inlineLastLine  string // last RedrawInline payload (for resize-aware erase)
-	testTermColumns int    // when >0, overrides termColumns (tests only)
+	aiOutput             bool
+	stdout               io.Writer
+	stderr               io.Writer
+	stderrFD             uintptr
+	liveInline           bool // human mode and stderr is a TTY (safe for \r progress)
+	inlineLastLines      int
+	inlineLastCols       int    // terminal width when inlineLastLine was drawn
+	inlineLastLine       string // last RedrawInline payload (for resize-aware erase)
+	transientNoticeLines int    // erasable block from ShowTransientNotice (TTY only)
+	testTermColumns      int    // when >0, overrides termColumns (tests only)
 }
 
 // New builds a production Printer. liveInline is enabled when stderrFD points
@@ -133,4 +134,9 @@ func (p *Printer) ClearInline() {
 	}
 	p.clearInlineBeforeDraw()
 	p.resetInlineState()
+}
+
+// TransientNoticeLinesForTest returns erasable notice line count after ShowTransientNotice.
+func (p *Printer) TransientNoticeLinesForTest() int {
+	return p.transientNoticeLines
 }

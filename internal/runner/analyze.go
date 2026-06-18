@@ -653,13 +653,15 @@ func buildReportSummary(rep *Report, aggs map[testKey]*aggregate, slowThreshold 
 // IterationDigest summarizes one iteration JSONL log for per-iteration CLI output.
 // Counts match a single-iteration Analyze (same rules as the final report).
 type IterationDigest struct {
-	Result       string // pass, fail, timeout
-	RanTests     int    // distinct named tests (package.test) that executed (pass/fail/timeout), excluding skip-only
-	FailTests    int    // len(IterationSummaries[0].FailingTests)
-	TimeoutTests int    // len(Timeouts) for this iteration
-	SkipTests    int    // distinct named tests skipped in this iteration
-	SlowTests    int    // tests over slow threshold
-	BuildFailure bool   // compile/build failed or heuristic package-level fail with no named tests run
+	Result        string   // pass, fail, timeout
+	RanTests      int      // distinct named tests (package.test) that executed (pass/fail/timeout), excluding skip-only
+	FailTests     int      // len(IterationSummaries[0].FailingTests)
+	TimeoutTests  int      // len(Timeouts) for this iteration
+	SkipTests     int      // distinct named tests skipped in this iteration
+	SlowTests     int      // tests over slow threshold
+	BuildFailure  bool     // compile/build failed or heuristic package-level fail with no named tests run
+	FailingTests  []string // named tests / packages that failed this iteration
+	TimedOutTests []string // named tests that timed out this iteration
 }
 
 // countNamedTestsRanInAggs counts distinct non-empty test keys that recorded
@@ -726,11 +728,29 @@ func iterationDigestFromReport(rep *Report) IterationDigest {
 		slowTests = rep.Summary.SlowCount
 	}
 	return IterationDigest{
-		Result:       s.Result,
-		FailTests:    len(s.FailingTests),
-		SlowTests:    slowTests,
-		TimeoutTests: len(rep.Timeouts),
+		Result:        s.Result,
+		FailTests:     len(s.FailingTests),
+		SlowTests:     slowTests,
+		TimeoutTests:  len(rep.Timeouts),
+		FailingTests:  append([]string(nil), s.FailingTests...),
+		TimedOutTests: timedOutTestNamesFromReport(rep),
 	}
+}
+
+func timedOutTestNamesFromReport(rep *Report) []string {
+	if len(rep.Timeouts) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(rep.Timeouts))
+	for _, e := range rep.Timeouts {
+		name := e.Test
+		if name == "" {
+			name = e.Package
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // AnalyzeResults opens every `iteration-*.log.jsonl` file in resultsDir, in

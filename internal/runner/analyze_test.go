@@ -202,7 +202,17 @@ func TestDigestIterationJSONL(t *testing.T) {
 		assert.Equal(t, "fail", d.Result)
 		assert.Equal(t, 0, d.RanTests)
 		assert.Equal(t, 1, d.FailTests)
+		assert.Equal(t, []string{"pkg/build"}, d.FailingTests)
 		assert.True(t, d.BuildFailure)
+	})
+
+	t.Run("named test fail", func(t *testing.T) {
+		t.Parallel()
+		failJSON := `{"Action":"fail","Package":"pkg/a","Test":"TestX","Elapsed":0.1}` + "\n"
+		d, err := DigestIterationJSONL(strings.NewReader(failJSON), 30*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "fail", d.Result)
+		assert.Equal(t, []string{"TestX"}, d.FailingTests)
 	})
 
 	t.Run("failed_build_field", func(t *testing.T) {
@@ -216,14 +226,15 @@ func TestDigestIterationJSONL(t *testing.T) {
 
 	t.Run("timeout", func(t *testing.T) {
 		t.Parallel()
-		toJSON := `{"Action":"output","Package":"pkg/hang","Output":"panic: test timed out after 2m0s\n"}
-{"Action":"fail","Package":"pkg/hang","Elapsed":120.0}
+		toJSON := `{"Action":"output","Package":"pkg/hang","Test":"TestHang","Output":"panic: test timed out after 2m0s\n"}
+{"Action":"fail","Package":"pkg/hang","Test":"TestHang","Elapsed":120.0}
 `
 		d, err := DigestIterationJSONL(strings.NewReader(toJSON), 30*time.Second)
 		require.NoError(t, err)
 		assert.Equal(t, "timeout", d.Result)
-		assert.Equal(t, 0, d.RanTests)
+		assert.Equal(t, 1, d.RanTests)
 		assert.GreaterOrEqual(t, d.TimeoutTests, 1)
+		assert.Equal(t, []string{"TestHang"}, d.TimedOutTests)
 	})
 
 	t.Run("two named tests", func(t *testing.T) {

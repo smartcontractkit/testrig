@@ -829,7 +829,7 @@ func TestRunDiagnoseIterationsRunsInParallelWithWorkerIsolation(t *testing.T) {
 		hooks,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, 4, state.completed)
+	assert.Equal(t, 4, state.Completed())
 	assert.Equal(t, int32(2), maxActive.Load())
 	assert.Equal(t, 2, resets, "each worker should reset before being reused")
 	assert.Equal(t, 4, dumps)
@@ -943,7 +943,7 @@ func TestRunDiagnoseIterationsStopsOnBuildFailure(t *testing.T) {
 				hooks,
 			)
 			require.NoError(t, err)
-			assert.Equal(t, 1, state.completed)
+			assert.Equal(t, 1, state.Completed())
 			assert.True(t, state.failedFast)
 			assert.Equal(t, failFastReasonBuildFailure, state.failedFastReason)
 			assert.Equal(t, 0, state.failedFastIteration)
@@ -1021,7 +1021,7 @@ func TestRunDiagnoseIterations_serialLiveProgressMutex_noMergedProgressAndTableL
 		hooks,
 	)
 	require.NoError(t, err)
-	require.Equal(t, conf.Iterations, state.completed)
+	require.Equal(t, conf.Iterations, state.Completed())
 
 	for line := range strings.SplitSeq(stderr.String(), "\n") {
 		plain := stripANSI(ttySegmentAfterLastCR(line))
@@ -1143,7 +1143,7 @@ func TestRunDiagnoseIterationsFailFastOnCategories(t *testing.T) {
 				hooks,
 			)
 			require.NoError(t, err)
-			assert.Equal(t, tc.wantCompleted, state.completed)
+			assert.Equal(t, tc.wantCompleted, state.Completed())
 			assert.Equal(t, tc.wantFailed, state.failedFast)
 		})
 	}
@@ -1170,6 +1170,16 @@ func TestShouldFailFastIterationOptimization(t *testing.T) {
 	assert.Empty(t, reason)
 
 	failed, reason = shouldFailFastIteration(conf, os.ErrNotExist, IterationDigest{}, os.ErrNotExist)
+	assert.False(t, failed)
+	assert.Empty(t, reason)
+}
+
+func TestShouldFailFastIteration_interruptNotBuildFailure(t *testing.T) {
+	t.Parallel()
+	conf := &config.App{FailFast: false}
+
+	digest := IterationDigest{Result: "fail", RanTests: 0, FailTests: 3, BuildFailure: true}
+	failed, reason := shouldFailFastIteration(conf, context.Canceled, digest, nil)
 	assert.False(t, failed)
 	assert.Empty(t, reason)
 }
@@ -1322,7 +1332,7 @@ func TestRunDiagnoseIterationsCallsIterationHooks(t *testing.T) {
 
 	state, err := runDiagnoseIterations(context.Background(), conf, out, resultsDir, []string{"./pkg"}, nil, hooks)
 	require.NoError(t, err)
-	assert.Equal(t, 3, state.completed)
+	assert.Equal(t, 3, state.Completed())
 	assert.Equal(t, int32(3), setupCalls.Load(), "setup called once per iteration")
 	assert.Equal(t, int32(3), teardownCalls.Load(), "teardown called once per iteration")
 	assert.True(t, setupBeforeTeardown.Load(), "setup must be called before teardown")
@@ -1380,13 +1390,13 @@ func TestRunDiagnoseIterations_gracefulStop_finishesInFlight(t *testing.T) {
 			hooks,
 		)
 		require.NoError(t, err)
-		assert.Equal(t, 1, state.completed)
+		assert.Equal(t, 1, state.Completed())
 		assert.True(t, state.GracefulStop)
 		assert.Len(t, started, 1)
 	})
 }
 
-func TestRunDiagnoseIterations_gracefulStop_printsNoticeAfterDigest(t *testing.T) {
+func TestRunDiagnoseIterations_gracefulStop_printsNoticeImmediately(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ctx, stop := NewDiagnoseRunContextForTest(context.Background())
@@ -1405,6 +1415,7 @@ func TestRunDiagnoseIterations_gracefulStop_printsNoticeAfterDigest(t *testing.T
 			runIteration: func(runCtx context.Context, p diagnoseIterationParams) error {
 				if p.Iteration == 0 {
 					RequestDiagnoseGracefulStop(runCtx)
+					time.Sleep(1 * time.Second)
 				}
 				writePassIterationJSONL(t, p.ResultsDir, p.Iteration)
 				return nil
@@ -1423,7 +1434,7 @@ func TestRunDiagnoseIterations_gracefulStop_printsNoticeAfterDigest(t *testing.T
 		require.NoError(t, err)
 		assert.True(t, state.GracefulStop)
 		assert.Contains(t, stderr.String(), "Stopping diagnose run after current iteration")
-		assert.Contains(t, stderr.String(), "again to cancel immediately")
+		require.Equal(t, 0, out.TransientNoticeLinesForTest(), "notice should be cleared before run ends")
 	})
 }
 
@@ -1477,7 +1488,7 @@ func TestRunDiagnoseIterations_gracefulStop_idleBetweenIterations(t *testing.T) 
 
 		require.NoError(t, runErr)
 		require.NotNil(t, state)
-		assert.Equal(t, 1, state.completed)
+		assert.Equal(t, 1, state.Completed())
 		assert.True(t, state.GracefulStop)
 	})
 }
@@ -1529,7 +1540,7 @@ func TestRunDiagnoseIterations_hardCancel_abortsInFlight(t *testing.T) {
 
 		require.NoError(t, runErr)
 		require.NotNil(t, state)
-		assert.Less(t, state.completed, conf.Iterations)
+		assert.Less(t, state.Completed(), conf.Iterations)
 		assert.False(t, state.GracefulStop)
 		require.Error(t, ctx.Err())
 	})
@@ -1571,7 +1582,7 @@ func TestDiagnoseGracefulStop_writesPartialReport(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.True(t, state.GracefulStop)
-		require.Equal(t, 2, state.completed)
+		require.Equal(t, 2, state.Completed())
 
 		require.NoError(t, writeRunState(resultsDir, conf, []string{"./pkg"}, state, start))
 		require.NoError(t, FinishDiagnoseAnalysis(ctx, conf, out, []string{"./pkg"}, state, start, resultsDir))
