@@ -58,7 +58,7 @@ type diagnoseRunHooks struct {
 
 // DiagnoseRunState captures the runtime progress and limits of a diagnose session.
 type DiagnoseRunState struct {
-	completed           int
+	completed           atomic.Int32
 	failedFast          bool
 	failedFastReason    string
 	failedFastIteration int // 0-based diagnose iteration index; -1 if unset
@@ -66,6 +66,14 @@ type DiagnoseRunState struct {
 	iterDurations       []time.Duration
 	shuffleSeeds        map[int]int64
 	liveProgress        bool
+}
+
+// Completed returns the number of diagnose iterations finished so far.
+func (s *DiagnoseRunState) Completed() int {
+	if s == nil {
+		return 0
+	}
+	return int(s.completed.Load())
 }
 
 func runCommand(ctx context.Context, conf *config.App, binary string, args []string, env []string) error {
@@ -148,7 +156,8 @@ func RunIterations(
 		}
 	}
 
-	if state.failedFast && state.failedFastReason == failFastReasonBuildFailure && state.failedFastIteration >= 0 {
+	if state.failedFast && state.failedFastReason == failFastReasonBuildFailure && state.failedFastIteration >= 0 &&
+		!state.GracefulStop {
 		if !out.AIOutput() {
 			printBuildError(out, resultsDir, state.failedFastIteration)
 		} else {
@@ -216,7 +225,8 @@ func FinishDiagnoseAnalysis(
 	start time.Time,
 	resultsDir string,
 ) error {
-	if state.failedFast && state.failedFastReason == failFastReasonBuildFailure && state.failedFastIteration >= 0 {
+	if state.failedFast && state.failedFastReason == failFastReasonBuildFailure && state.failedFastIteration >= 0 &&
+		!state.GracefulStop {
 		return nil
 	}
 
@@ -256,11 +266,12 @@ func FinishDiagnoseAnalysis(
 }
 
 func printDiagnoseInterruptions(ctx context.Context, conf *config.App, out *output.Printer, state *DiagnoseRunState) {
+	clearDiagnoseGracefulStopNotice(out)
 	if state.GracefulStop {
 		if !out.AIOutput() {
 			out.HumanStderr(
 				termstyle.Accent.Render(
-					fmt.Sprintf("stopped early after %d/%d iterations", state.completed, conf.Iterations),
+					fmt.Sprintf("stopped early after %d/%d iterations", state.Completed(), conf.Iterations),
 				) +
 					termstyle.Muted.Render(
 						" — analyzing partial results…",
@@ -269,11 +280,11 @@ func printDiagnoseInterruptions(ctx context.Context, conf *config.App, out *outp
 		}
 	} else if interrupted := ctx.Err() != nil; interrupted {
 		if out.AIOutput() {
-			out.Stderrf("interrupted completed=%d total=%d\n", state.completed, conf.Iterations)
+			out.Stderrf("interrupted completed=%d total=%d\n", state.Completed(), conf.Iterations)
 		} else {
 			out.HumanStderr(
 				termstyle.Accent.Render(
-					fmt.Sprintf("interrupted after %d/%d iterations", state.completed, conf.Iterations),
+					fmt.Sprintf("interrupted after %d/%d iterations", state.Completed(), conf.Iterations),
 				) +
 					termstyle.Muted.Render(
 						" — analyzing partial results…",
@@ -464,12 +475,13 @@ func recordDiagnoseIterationResult(
 	parallelProgress *parallelDiagnoseProgress,
 	serialProgressMu *sync.Mutex,
 ) {
-	state.completed++
+	state.completed.Add(1)
 	state.iterDurations[result.iteration] = result.duration
 	if state.shuffleSeeds != nil {
 		state.shuffleSeeds[result.iteration] = result.shuffle
 	}
 	diagnoseWithRenderLock(parallelProgress, serialProgressMu, func() {
+		clearDiagnoseGracefulStopNotice(out)
 		if parallelProgress != nil || serialProgressMu != nil {
 			out.ClearInline()
 		}
@@ -555,8 +567,10 @@ func runDiagnoseIterations(
 	}()
 
 	var serialProgressMu *sync.Mutex
-	if parallel == 1 && state.liveProgress {
-		serialProgressMu = new(sync.Mutex)
+	gracefulStopCh := DiagnoseGracefulStopChan(ctx)
+	stderrRenderMu := &sync.Mutex{}
+	if parallelProgress == nil && (state.liveProgress || gracefulStopCh != nil) {
+		serialProgressMu = stderrRenderMu
 	}
 
 	var inFlight atomic.Int32
@@ -585,7 +599,6 @@ func runDiagnoseIterations(
 
 	wg.Go(func() {
 		defer close(jobs)
-		gracefulStopCh := DiagnoseGracefulStopChan(ctx)
 		for i := range conf.Iterations {
 			if DiagnoseGracefulStopRequested(ctx) {
 				return
@@ -615,14 +628,22 @@ func runDiagnoseIterations(
 
 	var firstErr error
 	var gracefulStopNotice sync.Once
-	maybePrintGracefulStopNotice := func() {
-		if !DiagnoseGracefulStopRequested(ctx) || inFlight.Load() > 0 {
-			return
-		}
+	markGracefulStop := func() {
 		gracefulStopNotice.Do(func() {
 			state.GracefulStop = true
-			printDiagnoseGracefulStopNotice(out, state.completed, conf.Iterations)
+			diagnoseWithRenderLock(parallelProgress, serialProgressMu, func() {
+				printDiagnoseGracefulStopNotice(out, state.Completed(), conf.Iterations)
+			})
 		})
+	}
+	if gracefulStopCh != nil {
+		go func() {
+			select {
+			case <-gracefulStopCh:
+				markGracefulStop()
+			case <-runCtx.Done():
+			}
+		}()
 	}
 
 	for result := range results {
@@ -634,9 +655,13 @@ func runDiagnoseIterations(
 			continue
 		}
 		recordDiagnoseIterationResult(state, result, conf, out, parallelProgress, serialProgressMu)
-		maybePrintGracefulStopNotice()
 	}
-	maybePrintGracefulStopNotice()
+	diagnoseWithRenderLock(parallelProgress, serialProgressMu, func() {
+		clearDiagnoseGracefulStopNotice(out)
+	})
+	if DiagnoseGracefulStopRequested(ctx) {
+		markGracefulStop()
+	}
 	return state, firstErr
 }
 
@@ -800,6 +825,9 @@ func shouldFailFastIteration(conf *config.App, iterErr error, d IterationDigest,
 		return false, ""
 	}
 	if d.BuildFailure {
+		if isInterruptedIteration(iterErr) {
+			return false, ""
+		}
 		return true, failFastReasonBuildFailure
 	}
 	if iterErr != nil && conf.FailFast {
@@ -1326,6 +1354,7 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 	cmd.Dir = moduleDir
 	cmd.Stdin = os.Stdin
 	cmd.Env = append(os.Environ(), env...)
+	isolateDiagnoseChildProcessGroup(cmd)
 	// Soft-cancel on ctx cancellation so `go test -json` gets a chance to flush
 	// its final events before we escalate to SIGKILL after WaitDelay.
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }

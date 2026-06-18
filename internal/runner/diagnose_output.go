@@ -173,7 +173,7 @@ func printDiagnoseGracefulStopNotice(out *output.Printer, completed, total int) 
 	}
 	out.ClearInline()
 	hint := diagnoseInterruptKeyHint()
-	out.HumanStderr(
+	out.ShowTransientNotice(
 		termstyle.Accent.Render(
 			fmt.Sprintf("Stopping diagnose run after current iteration — %d/%d completed.", completed, total),
 		) + "\n" +
@@ -181,4 +181,11 @@ func printDiagnoseGracefulStopNotice(out *output.Printer, completed, total int) 
 				fmt.Sprintf("Press %s again to cancel immediately.", hint),
 			),
 	)
+}
+
+func clearDiagnoseGracefulStopNotice(out *output.Printer) {
+	if out == nil {
+		return
+	}
+	out.ClearTransientNotice()
 }

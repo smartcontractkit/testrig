@@ -127,6 +127,21 @@ func TestInlineEraseLineCount_usesCurrentWidthAfterShrink(t *testing.T) {
 	require.GreaterOrEqual(t, p.inlineEraseLineCount(), 3)
 }
 
+func TestClearTransientNotice_beforeTableRow(t *testing.T) {
+	t.Parallel()
+	var stderr strings.Builder
+	out := NewForTest(false, io.Discard, &stderr, true)
+	out.ShowTransientNotice("Stopping diagnose run\nPress Ctrl+C again")
+	require.Equal(t, 2, out.TransientNoticeLinesForTest())
+	out.ClearTransientNotice()
+	out.HumanStderr("    2  pass")
+	got := stderr.String()
+	require.NotContains(t, got, "Press Ctrl+C again    2")
+	require.NotContains(t, got, "Stopping diagnose run\n\n    2")
+	require.Contains(t, got, "    2  pass\n")
+	require.Contains(t, got, "\x1b[1A")
+}
+
 func TestClearInline_afterShrink_clearsReflowRows(t *testing.T) {
 	t.Parallel()
 	var stderr strings.Builder

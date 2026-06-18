@@ -3,6 +3,7 @@ package output
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
@@ -72,6 +73,61 @@ func (p *Printer) inlineEraseLineCount() int {
 
 func (p *Printer) clearInlineBeforeDraw() {
 	eraseInlineLines(p.stderr, p.inlineEraseLineCount())
+}
+
+// ShowTransientNotice prints a short multi-line block that ClearTransientNotice can
+// erase on a TTY. Use for Ctrl+C hints that should not remain in the iteration table.
+func (p *Printer) ShowTransientNotice(text string) {
+	if p.aiOutput {
+		return
+	}
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return
+	}
+	p.ClearTransientNotice()
+	p.ClearInline()
+	if !p.liveInline {
+		for part := range strings.SplitSeq(text, "\n") {
+			_, _ = fmt.Fprintln(p.stderr, part)
+		}
+		return
+	}
+	cols := p.termColumns()
+	parts := strings.Split(text, "\n")
+	lines := 0
+	for i, part := range parts {
+		if i > 0 {
+			_, _ = fmt.Fprint(p.stderr, "\n")
+		}
+		_, _ = fmt.Fprint(p.stderr, part)
+		w := inlineVisualLines(part, cols)
+		if w < 1 && part != "" {
+			w = 1
+		}
+		lines += w
+	}
+	if lines < 1 {
+		lines = len(parts)
+	}
+	p.transientNoticeLines = lines
+}
+
+// ClearTransientNotice removes the last ShowTransientNotice block from a TTY.
+func (p *Printer) ClearTransientNotice() {
+	lines := p.transientNoticeLines
+	if lines <= 0 {
+		return
+	}
+	if p.liveInline {
+		eraseInlineLines(p.stderr, lines)
+		if lines > 1 {
+			// eraseInlineLines leaves the cursor on the last cleared row; move back to
+			// the first so the next stderr write replaces the block without a gap.
+			_, _ = fmt.Fprintf(p.stderr, "\033[%dA", lines-1)
+		}
+	}
+	p.transientNoticeLines = 0
 }
 
 // TermColumns returns stderr width for progress fitting (defaults to 80 when unknown).
