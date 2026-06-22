@@ -28,6 +28,26 @@ func readLogMapContent(t *testing.T, path string) string {
 	return string(b)
 }
 
+func analyze(t *testing.T, iterations []io.Reader, slowThreshold time.Duration) (*Report, LogMap) {
+	t.Helper()
+	rep, logs, cleanup, err := Analyze(iterations, slowThreshold)
+	if cleanup != nil {
+		t.Cleanup(cleanup)
+	}
+	require.NoError(t, err)
+	return rep, logs
+}
+
+func analyzeResults(t *testing.T, resultsDir string, slowThreshold time.Duration) (*Report, LogMap) {
+	t.Helper()
+	rep, logs, cleanup, err := AnalyzeResults(resultsDir, slowThreshold)
+	if cleanup != nil {
+		t.Cleanup(cleanup)
+	}
+	require.NoError(t, err)
+	return rep, logs
+}
+
 func readers(iters ...string) []io.Reader {
 	rs := make([]io.Reader, len(iters))
 	for i, s := range iters {
@@ -43,8 +63,7 @@ func TestAnalyzePackageLevelTimeoutIterationSummary(t *testing.T) {
 {"Action":"fail","Package":"pkg/hang","Elapsed":120.0}
 `,
 	}
-	rep, _, _, err := Analyze(readers(iterations...), 30*time.Second)
-	require.NoError(t, err)
+	rep, _ := analyze(t, readers(iterations...), 30*time.Second)
 	require.Len(t, rep.IterationSummaries, 1)
 	assert.Equal(t, "timeout", rep.IterationSummaries[0].Result)
 }
@@ -55,8 +74,7 @@ func TestAnalyzeHandlesLongLines(t *testing.T) {
 	over := strings.Repeat("x", bufio.MaxScanTokenSize+1) + "\n"
 	iter := `{"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}` + "\n" + over +
 		`{"Action":"pass","Package":"p","Test":"T2","Elapsed":0.01}` + "\n"
-	rep, _, _, err := Analyze(readers(iter), 30*time.Second)
-	require.NoError(t, err)
+	rep, _ := analyze(t, readers(iter), 30*time.Second)
 	require.NotNil(t, rep)
 	require.Len(t, rep.IterationSummaries, 1)
 	assert.Equal(t, "pass", rep.IterationSummaries[0].Result)
@@ -72,8 +90,7 @@ badpkg.go:1:2: undefined: MissingType
 ` + `{"Action":"output","Package":"example.com/badpkg","Output":"# example.com/badpkg\n"}
 {"Action":"fail","Package":"example.com/badpkg","Elapsed":0.0}
 `
-	rep, _, _, err := Analyze(readers(iter), 30*time.Second)
-	require.NoError(t, err)
+	rep, _ := analyze(t, readers(iter), 30*time.Second)
 	require.Len(t, rep.Failures, 1)
 	assert.Equal(t, "example.com/badpkg", rep.Failures[0].Package)
 	assert.Empty(t, rep.Failures[0].Test)
@@ -126,8 +143,7 @@ func TestAnalyzeTestdataFiles(t *testing.T) {
 			require.NoError(t, err)
 			defer func() { _ = f.Close() }()
 
-			rep, _, _, err := Analyze([]io.Reader{f}, 30*time.Second)
-			require.NoError(t, err)
+			rep, _ := analyze(t, []io.Reader{f}, 30*time.Second)
 
 			require.Len(t, rep.IterationSummaries, 1)
 			assert.Equal(t, tc.wantResult, rep.IterationSummaries[0].Result)
@@ -167,8 +183,7 @@ func TestAnalyzePackageLevelFailureIterationSummary(t *testing.T) {
 	iterations := []string{
 		`{"Action":"fail","Package":"pkg/build","Elapsed":0.0}` + "\n",
 	}
-	rep, _, _, err := Analyze(readers(iterations...), 30*time.Second)
-	require.NoError(t, err)
+	rep, _ := analyze(t, readers(iterations...), 30*time.Second)
 	require.Len(t, rep.IterationSummaries, 1)
 	assert.Equal(t, "fail", rep.IterationSummaries[0].Result)
 	assert.Equal(t, []string{"pkg/build"}, rep.IterationSummaries[0].FailingTests)
@@ -454,8 +469,7 @@ func TestAnalyze(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			rep, _, _, err := Analyze(readers(tc.iterations...), tc.slowThreshold)
-			require.NoError(t, err)
+			rep, _ := analyze(t, readers(tc.iterations...), tc.slowThreshold)
 			assert.Equal(t, len(tc.iterations), rep.Iterations)
 			assert.Equal(t, tc.wantFlakes, publicTestEntries(rep.Flakes), "flakes")
 			assert.Equal(t, tc.wantFailures, publicTestEntries(rep.Failures), "failures")
@@ -629,8 +643,7 @@ func TestReportSummary(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			rep, _, _, err := Analyze(readers(tc.iterations...), tc.slowThreshold)
-			require.NoError(t, err)
+			rep, _ := analyze(t, readers(tc.iterations...), tc.slowThreshold)
 			tc.check(t, rep.Summary)
 		})
 	}
@@ -646,11 +659,10 @@ func TestPrintSummaryOverallContains(t *testing.T) {
 		{
 			name: "flake_rates_and_slow_line",
 			prep: func(t *testing.T) *Report {
-				rep, _, _, err := Analyze(readers(
+				rep, _ := analyze(t, readers(
 					`{"Action":"fail","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 					`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 				), 30*time.Second)
-				require.NoError(t, err)
 				return rep
 			},
 			needle: []string{
@@ -666,11 +678,10 @@ func TestPrintSummaryOverallContains(t *testing.T) {
 		{
 			name: "iteration_wall_clock_runtimes",
 			prep: func(t *testing.T) *Report {
-				rep, _, _, err := Analyze(
+				rep, _ := analyze(t,
 					readers(`{"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}`),
 					30*time.Second,
 				)
-				require.NoError(t, err)
 				require.NotNil(t, rep.Summary)
 				rep.IterationSummaries[0].Duration = 5 * time.Second
 				fillIterationRuntimeSummary(rep)
@@ -699,11 +710,10 @@ func TestPrintSummaryOverallContains(t *testing.T) {
 
 func TestPrintSummaryOverall_usesSeverityColors(t *testing.T) {
 	t.Parallel()
-	rep, _, _, err := Analyze(readers(
+	rep, _ := analyze(t, readers(
 		`{"Action":"fail","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)
-	require.NoError(t, err)
 	require.NotNil(t, rep.Summary)
 	s := rep.Summary
 
@@ -798,8 +808,7 @@ func TestAnalyzeCapturesLogsForFailures(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			rep, logs, _, err := Analyze(readers(tc.iterations...), 30*time.Second)
-			require.NoError(t, err)
+			rep, logs := analyze(t, readers(tc.iterations...), 30*time.Second)
 			var entries []TestEntry
 			switch tc.category {
 			case "flakes":
@@ -828,8 +837,7 @@ func TestAnalyzeReattributesTimeoutToRunningTests(t *testing.T) {
 {"Action":"output","Package":"p","Test":"TestFast","Output":"goroutine 1 [chan receive]:\n"}
 {"Action":"fail","Package":"p","Elapsed":5.01}
 `
-	rep, logs, _, err := Analyze(readers(iter), 30*time.Second)
-	require.NoError(t, err)
+	rep, logs := analyze(t, readers(iter), 30*time.Second)
 
 	names := make([]string, 0, len(rep.Timeouts))
 	for _, e := range rep.Timeouts {
@@ -853,8 +861,7 @@ func TestAnalyzeKeepsTimeoutOnCulpritWhenItWasTheReportedTest(t *testing.T) {
 {"Action":"output","Package":"p","Test":"TestSlow","Output":"\t\tTestSlow (5s)\n"}
 {"Action":"fail","Package":"p","Elapsed":5.01}
 `
-	rep, _, _, err := Analyze(readers(iter), 30*time.Second)
-	require.NoError(t, err)
+	rep, _ := analyze(t, readers(iter), 30*time.Second)
 	require.Len(t, rep.Timeouts, 1)
 	assert.Equal(t, "TestSlow", rep.Timeouts[0].Test)
 }
@@ -996,8 +1003,7 @@ func TestAnalyzeResultsRoundtrip(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(dir, "iteration-1.log.jsonl"),
 		[]byte(`{"Action":"pass","Package":"pkg/z","Test":"TestFlaky","Elapsed":0.1}`+"\n"), 0600))
 
-	rep, _, _, err := AnalyzeResults(dir, 30*time.Second)
-	require.NoError(t, err)
+	rep, _ := analyzeResults(t, dir, 30*time.Second)
 	require.Len(t, rep.Flakes, 1)
 	assert.Equal(t, "TestFlaky", rep.Flakes[0].Test)
 
@@ -1076,8 +1082,7 @@ func TestAnalyzeIterationSummaries(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			rep, _, _, err := Analyze(readers(tc.iterations...), 30*time.Second)
-			require.NoError(t, err)
+			rep, _ := analyze(t, readers(tc.iterations...), 30*time.Second)
 			require.Len(t, rep.IterationSummaries, len(tc.want))
 			// Strip Duration/ShuffleSeed — set by runner, not Analyze.
 			got := make([]IterationSummary, len(rep.IterationSummaries))
@@ -1094,8 +1099,7 @@ func TestAnalyzeSkipsMalformedLines(t *testing.T) {
 	input := `not json at all
 {"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}
 `
-	rep, _, _, err := Analyze(readers(input), 30*time.Second)
-	require.NoError(t, err)
+	rep, _ := analyze(t, readers(input), 30*time.Second)
 	assert.Empty(t, rep.Flakes)
 	assert.Empty(t, rep.Failures)
 }
@@ -1214,11 +1218,10 @@ func TestFillIterationRuntimeSummaryTable(t *testing.T) {
 
 func TestMarshalAIDiagnoseComplete_fromAnalyze(t *testing.T) {
 	t.Parallel()
-	rep, _, _, err := Analyze(readers(
+	rep, _ := analyze(t, readers(
 		`{"Action":"fail","Package":"p","Test":"T","Elapsed":0.1}`,
 		`{"Action":"pass","Package":"p","Test":"T","Elapsed":0.1}`,
 	), 30*time.Second)
-	require.NoError(t, err)
 
 	raw, err := marshalAIDiagnoseComplete("/tmp/results", "/tmp/results/report.json", "/tmp/results/trace.json", rep)
 	require.NoError(t, err)
@@ -1237,8 +1240,7 @@ func TestAnalyzeSlowTestsNoDuplication(t *testing.T) {
 	iter := `{"Action":"pass","Package":"pkg/slow","Test":"TestSlow","Elapsed":10.0}
 {"Action":"pass","Package":"pkg/slow","Elapsed":10.0}
 `
-	rep, _, _, err := Analyze([]io.Reader{strings.NewReader(iter)}, 1*time.Second)
-	require.NoError(t, err)
+	rep, _ := analyze(t, []io.Reader{strings.NewReader(iter)}, 1*time.Second)
 
 	require.Len(t, rep.Slow, 1)
 	assert.Equal(t, "pkg/slow", rep.Slow[0].Package)

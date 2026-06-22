@@ -17,11 +17,10 @@ import (
 
 func TestMarshalAIDiagnoseComplete(t *testing.T) {
 	t.Parallel()
-	rep, _, _, err := Analyze(readers(
+	rep, _ := analyze(t, readers(
 		`{"Action":"fail","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)
-	require.NoError(t, err)
 
 	resultsDir := t.TempDir()
 	reportPath := filepath.Join(resultsDir, "report.json")
@@ -93,11 +92,10 @@ func TestFormatSummaryFlatLine(t *testing.T) {
 
 func TestPrintSummaryVerdict_noIssues(t *testing.T) {
 	t.Parallel()
-	rep, _, _, err := Analyze(
+	rep, _ := analyze(t,
 		readers(`{"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}`),
 		30*time.Second,
 	)
-	require.NoError(t, err)
 	var buf strings.Builder
 	PrintSummary(&buf, rep)
 	plain := stripANSI(buf.String())

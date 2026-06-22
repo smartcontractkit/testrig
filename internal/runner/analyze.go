@@ -260,16 +260,13 @@ func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogM
 	interner := newStringInterner()
 	for i, r := range iterations {
 		if err := scanIterationJSONL(r, i, aggs, nil, slowThreshold, interner, tmpDir); err != nil {
-			cleanup()
-			return nil, nil, nil, err
+			return nil, nil, cleanup, err
 		}
 		if err := reattributeTimeoutsIter(aggs, i, tmpDir); err != nil {
-			cleanup()
-			return nil, nil, nil, err
+			return nil, nil, cleanup, err
 		}
 		if err := flushOutputsToDisk(i, aggs, tmpDir); err != nil {
-			cleanup()
-			return nil, nil, nil, err
+			return nil, nil, cleanup, err
 		}
 	}
 	rep, logs := buildReportFromAggs(aggs, len(iterations), slowThreshold)
@@ -806,8 +803,7 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 
 	matches, err := filepath.Glob(filepath.Join(resultsDir, "iteration-*.log.jsonl"))
 	if err != nil {
-		cleanup()
-		return nil, nil, nil, err
+		return nil, nil, cleanup, err
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		return iterNumber(matches[i]) < iterNumber(matches[j])
@@ -823,16 +819,13 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 			defer func() { _ = f.Close() }()
 			return scanIterationJSONL(f, i, aggs, nil, slowThreshold, interner, tmpDir)
 		}(); err != nil {
-			cleanup()
-			return nil, nil, nil, err
+			return nil, nil, cleanup, err
 		}
 		if err := reattributeTimeoutsIter(aggs, i, tmpDir); err != nil {
-			cleanup()
-			return nil, nil, nil, err
+			return nil, nil, cleanup, err
 		}
 		if err := flushOutputsToDisk(i, aggs, tmpDir); err != nil {
-			cleanup()
-			return nil, nil, nil, err
+			return nil, nil, cleanup, err
 		}
 	}
 	rep, logs := buildReportFromAggs(aggs, len(matches), slowThreshold)

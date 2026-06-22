@@ -14,11 +14,10 @@ import (
 
 func TestRenderOverallRatesTable_allClear(t *testing.T) {
 	t.Parallel()
-	rep, _, _, err := Analyze(
+	rep, _ := analyze(t,
 		readers(`{"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}`),
 		30*time.Second,
 	)
-	require.NoError(t, err)
 	plain := stripANSI(renderOverallRatesTable(rep))
 	assert.Contains(t, plain, "Count")
 	assert.Contains(t, plain, "Rate")
@@ -28,11 +27,10 @@ func TestRenderOverallRatesTable_allClear(t *testing.T) {
 
 func TestRenderOverallRatesTable_flakyRow(t *testing.T) {
 	t.Parallel()
-	rep, _, _, err := Analyze(readers(
+	rep, _ := analyze(t, readers(
 		`{"Action":"fail","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)
-	require.NoError(t, err)
 
 	plain := stripANSI(renderOverallRatesTable(rep))
 	assert.Contains(t, plain, "Broken Tests")
@@ -44,11 +42,10 @@ func TestRenderOverallRatesTable_flakyRow(t *testing.T) {
 
 func TestOverallScopeAndWallLine(t *testing.T) {
 	t.Parallel()
-	rep, _, _, err := Analyze(
+	rep, _ := analyze(t,
 		readers(`{"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}`),
 		30*time.Second,
 	)
-	require.NoError(t, err)
 	require.NotNil(t, rep.Summary)
 	rep.IterationSummaries[0].Duration = 5 * time.Second
 	fillIterationRuntimeSummary(rep)
@@ -104,11 +101,10 @@ func TestBuildOverallRateRows_flakyIterationsLast(t *testing.T) {
 
 func TestFormatOverallFlakyIterRate_CIColoredByGap(t *testing.T) {
 	t.Parallel()
-	rep, _, _, err := Analyze(readers(
+	rep, _ := analyze(t, readers(
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)
-	require.NoError(t, err)
 	require.NotNil(t, rep.Summary)
 
 	gap := *rep.Summary.FlakeIterationFailRateUpper - *rep.Summary.FlakeIterationFailRateLower
