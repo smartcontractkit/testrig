@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -878,9 +879,41 @@ func TestReattributeTimeoutsIterUnreadableLogPath(t *testing.T) {
 			logPaths:     map[int]string{0: badPath},
 		},
 	}
-	err := reattributeTimeoutsIter(aggs, 0)
+	err := reattributeTimeoutsIter(aggs, 0, dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reattribute timeouts iter 0")
+}
+
+func TestReattributeTimeoutsIterLargeOutput(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Create an output larger than 64KB (bufio.Scanner max token size)
+	hugeLine := strings.Repeat("a", 100*1024)
+	output := hugeLine + "\npanic: test timed out\n\trunning tests:\n\t\tTestSlow (5s)\n"
+
+	aggs := map[testKey]*aggregate{
+		{Package: "p", Test: "TestFast"}: {
+			timedOut:     true,
+			timeoutIters: []int{0},
+			outputs: map[int]*bytes.Buffer{
+				0: bytes.NewBufferString(output),
+			},
+		},
+	}
+	err := reattributeTimeoutsIter(aggs, 0, dir)
+	require.NoError(t, err)
+
+	require.NotNil(t, aggs[testKey{Package: "p", Test: "TestSlow"}])
+	na := aggs[testKey{Package: "p", Test: "TestSlow"}]
+	assert.True(t, na.timedOut)
+	assert.Contains(t, na.timeoutIters, 0)
+	assert.NotNil(t, na.logPaths[0])
+
+	b, err := os.ReadFile(na.logPaths[0])
+	require.NoError(t, err)
+	assert.Equal(t, output, string(b))
 }
 
 func TestScanIterationJSONLFlushOutputFailure(t *testing.T) {

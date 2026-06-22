@@ -263,7 +263,7 @@ func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogM
 			cleanup()
 			return nil, nil, nil, err
 		}
-		if err := reattributeTimeoutsIter(aggs, i); err != nil {
+		if err := reattributeTimeoutsIter(aggs, i, tmpDir); err != nil {
 			cleanup()
 			return nil, nil, nil, err
 		}
@@ -745,7 +745,7 @@ func DigestIterationJSONL(r io.Reader, slowThreshold time.Duration) (IterationDi
 	if err := scanIterationJSONL(r, 0, aggs, &meta, slowThreshold, interner, ""); err != nil {
 		return IterationDigest{}, err
 	}
-	if err := reattributeTimeoutsIter(aggs, 0); err != nil {
+	if err := reattributeTimeoutsIter(aggs, 0, ""); err != nil {
 		return IterationDigest{}, err
 	}
 	ran := countNamedTestsRanInAggs(aggs)
@@ -826,7 +826,7 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 			cleanup()
 			return nil, nil, nil, err
 		}
-		if err := reattributeTimeoutsIter(aggs, i); err != nil {
+		if err := reattributeTimeoutsIter(aggs, i, tmpDir); err != nil {
 			cleanup()
 			return nil, nil, nil, err
 		}
@@ -1280,57 +1280,29 @@ func flakeFailRatio(e TestEntry) float64 {
 	return float64(e.Fails) / float64(runs)
 }
 
-func reattributeTimeoutsIter(aggs map[testKey]*aggregate, i int) error {
+func reattributeTimeoutsIter(aggs map[testKey]*aggregate, i int, tmpDir string) error {
 	keys := make([]testKey, 0, len(aggs))
 	for k := range aggs {
 		keys = append(keys, k)
 	}
 	for _, key := range keys {
 		a := aggs[key]
-		if !a.timedOut {
+		if !a.timedOut || len(a.timeoutIters) == 0 || a.timeoutIters[len(a.timeoutIters)-1] != i {
 			continue
-		}
-		if len(a.timeoutIters) == 0 || a.timeoutIters[len(a.timeoutIters)-1] != i {
-			continue
-		}
-		var f *os.File
-		var r io.Reader
-		buf := a.outputs[i]
-		if buf != nil && buf.Len() > 0 {
-			r = bytes.NewReader(buf.Bytes())
-		}
-		if a.logPaths != nil && a.logPaths[i] != "" {
-			var err error
-			f, err = os.Open(a.logPaths[i]) //nolint:gosec // G304: path is securely generated temp file
-			if err != nil {
-				return fmt.Errorf("reattribute timeouts iter %d pkg %s test %s: %w", i, key.Package, key.Test, err)
-			}
-			if r != nil {
-				r = io.MultiReader(f, r)
-			} else {
-				r = f
-			}
 		}
 
+		names, r, f, err := getTimeoutOutputs(a, i, key, tmpDir)
+		if err != nil {
+			return err
+		}
 		if r == nil {
+			continue
+		}
+
+		if len(names) == 0 || slices.Contains(names, key.Test) {
 			if f != nil {
 				_ = f.Close()
 			}
-			continue
-		}
-		outputBytes, err := io.ReadAll(r)
-		if f != nil {
-			_ = f.Close()
-		}
-		if err != nil {
-			return fmt.Errorf("reattribute timeouts iter %d pkg %s test %s: %w", i, key.Package, key.Test, err)
-		}
-
-		names, err := parseRunningTests(bytes.NewReader(outputBytes))
-		if err != nil {
-			return fmt.Errorf("reattribute timeouts iter %d pkg %s test %s: %w", i, key.Package, key.Test, err)
-		}
-		if len(names) == 0 || slices.Contains(names, key.Test) {
 			continue
 		}
 
@@ -1355,13 +1327,115 @@ func reattributeTimeoutsIter(aggs map[testKey]*aggregate, i int) error {
 				na.runs++
 				na.lastRunIter = i
 			}
-			if na.outputs == nil {
-				na.outputs = make(map[int]*bytes.Buffer)
+
+			if err := copyTimeoutToTarget(i, na, f, r, tmpDir); err != nil {
+				if f != nil {
+					_ = f.Close()
+				}
+				return err
 			}
-			if na.outputs[i] == nil {
-				na.outputs[i] = &bytes.Buffer{}
+		}
+
+		if f != nil {
+			_ = f.Close()
+		}
+	}
+	return nil
+}
+
+func getTimeoutOutputs(a *aggregate, i int, key testKey, tmpDir string) ([]string, io.Reader, *os.File, error) {
+	var r io.Reader
+	var f *os.File
+	var err error
+
+	if tmpDir != "" {
+		if err := flushOutputForBuffer(i, a, tmpDir); err != nil {
+			return nil, nil, nil, fmt.Errorf(
+				"reattribute timeouts iter %d pkg %s test %s: flush: %w",
+				i,
+				key.Package,
+				key.Test,
+				err,
+			)
+		}
+		if a.logPaths != nil && a.logPaths[i] != "" {
+			f, err = os.Open(a.logPaths[i]) //nolint:gosec
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf(
+					"reattribute timeouts iter %d pkg %s test %s: open: %w",
+					i,
+					key.Package,
+					key.Test,
+					err,
+				)
 			}
-			_, _ = na.outputs[i].Write(outputBytes)
+			r = f
+		}
+	} else {
+		if buf := a.outputs[i]; buf != nil && buf.Len() > 0 {
+			r = bytes.NewReader(buf.Bytes())
+		}
+	}
+
+	if r == nil {
+		return nil, nil, nil, nil
+	}
+
+	names, err := parseRunningTests(r)
+	if err != nil {
+		if f != nil {
+			_ = f.Close()
+		}
+		return nil, nil, nil, fmt.Errorf(
+			"reattribute timeouts iter %d pkg %s test %s: parse: %w",
+			i,
+			key.Package,
+			key.Test,
+			err,
+		)
+	}
+	return names, r, f, nil
+}
+
+func copyTimeoutToTarget(i int, na *aggregate, f *os.File, r io.Reader, tmpDir string) error {
+	if tmpDir != "" {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek: %w", err)
+		}
+		if err := flushOutputForBuffer(i, na, tmpDir); err != nil {
+			return fmt.Errorf("flush target: %w", err)
+		}
+		var dst *os.File
+		var err error
+		if na.logPaths != nil && na.logPaths[i] != "" {
+			dst, err = os.OpenFile(na.logPaths[i], os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		} else {
+			dst, err = os.CreateTemp(tmpDir, "log-*")
+			if err == nil {
+				if na.logPaths == nil {
+					na.logPaths = make(map[int]string)
+				}
+				na.logPaths[i] = dst.Name()
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("open target log: %w", err)
+		}
+		_, copyErr := io.Copy(dst, f)
+		_ = dst.Close()
+		if copyErr != nil {
+			return fmt.Errorf("copy log: %w", copyErr)
+		}
+	} else {
+		if na.outputs == nil {
+			na.outputs = make(map[int]*bytes.Buffer)
+		}
+		if na.outputs[i] == nil {
+			na.outputs[i] = &bytes.Buffer{}
+		}
+		if br, ok := r.(*bytes.Reader); ok {
+			_, _ = br.Seek(0, io.SeekStart)
+			_, _ = io.Copy(na.outputs[i], br)
 		}
 	}
 	return nil
@@ -1422,11 +1496,28 @@ func flushOutputsToDisk(iterIdx int, aggs map[testKey]*aggregate, tmpDir string)
 // preamble (e.g. extra header text); after a name has been seen they mark the
 // end of the names section (e.g. trailing prose before the stack trace).
 func parseRunningTests(r io.Reader) ([]string, error) {
-	scanner := bufio.NewScanner(r)
+	reader := bufio.NewReader(r)
 	var names []string
 	found := false
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		lineBytes, isPrefix, err := reader.ReadLine()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return names, err
+		}
+
+		line := string(lineBytes)
+
+		// Consume the rest of the line if it was too long for ReadLine buffer
+		for isPrefix {
+			_, isPrefix, err = reader.ReadLine()
+			if err != nil {
+				break
+			}
+		}
+
 		if !found {
 			if strings.Contains(line, "running tests:") {
 				found = true
@@ -1450,9 +1541,6 @@ func parseRunningTests(r io.Reader) ([]string, error) {
 			continue
 		}
 		names = append(names, trim)
-	}
-	if err := scanner.Err(); err != nil {
-		return names, err
 	}
 	return names, nil
 }
