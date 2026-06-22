@@ -167,6 +167,29 @@ func TestWriteLogFilesNoLogsForNonFlaggedTests(t *testing.T) {
 	assert.Empty(t, entries, "no log files should be written for a clean-pass test")
 }
 
+func TestWriteLogFilesSkipsMissingTempPath(t *testing.T) {
+	t.Parallel()
+
+	iter := `{"Action":"output","Package":"p","Test":"T","Output":"fail-log\n"}
+{"Action":"fail","Package":"p","Test":"T","Elapsed":0.01}
+`
+	dir := t.TempDir()
+	rep, logs, _, err := Analyze(readers(iter), 30*time.Second)
+	require.NoError(t, err)
+	require.Len(t, rep.Failures, 1)
+
+	key := testKey{Package: "p", Test: "T"}
+	logs[key][0] = filepath.Join(dir, "missing.log")
+
+	require.NoError(t, WriteLogFiles(dir, rep, logs))
+
+	assert.Empty(t, rep.Failures[0].Logs, "missing temp must not produce ProblemLog entry")
+
+	entries, err := os.ReadDir(filepath.Join(dir, "logs"))
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
 func TestWriteCSV(t *testing.T) {
 	t.Parallel()
 

@@ -5,6 +5,8 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/pprof"
 	"syscall"
 
 	"charm.land/fang/v2"
@@ -40,6 +42,8 @@ func NewRootCommand(runnerOpts hooks.RunOptions) *cobra.Command {
 
 	rootCmd.PersistentFlags().
 		Bool("ai-output", !term.IsTerminal(os.Stdout.Fd()), "Use sparse output for agent tooling (and robotic humans)")
+	rootCmd.PersistentFlags().String("memprofile", "", "write memory profile to this file")
+	_ = rootCmd.PersistentFlags().MarkHidden("memprofile")
 	hooks.RegisterPersistentFlags(rootCmd.PersistentFlags())
 
 	gotestsumCmd := newGotestsumCmd(runnerOpts)
@@ -88,5 +92,16 @@ func runExecute(opts ...hooks.Option) error {
 		// Root forwards unknown flags (including go test -v) to go test; fang's -v is version.
 		fang.WithoutVersion(),
 	}
-	return fang.Execute(ctx, rootCmd, fangOpts...)
+	err := fang.Execute(ctx, rootCmd, fangOpts...)
+
+	if memprofile, _ := rootCmd.Flags().GetString("memprofile"); memprofile != "" {
+		f, createErr := os.Create(memprofile) //nolint:gosec // G304: memprofile path requested by user
+		if createErr == nil {
+			runtime.GC() // Get up-to-date statistics
+			_ = pprof.WriteHeapProfile(f)
+			_ = f.Close()
+		}
+	}
+
+	return err
 }

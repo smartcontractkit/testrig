@@ -858,6 +858,58 @@ func TestAnalyzeKeepsTimeoutOnCulpritWhenItWasTheReportedTest(t *testing.T) {
 	assert.Equal(t, "TestSlow", rep.Timeouts[0].Test)
 }
 
+func TestReattributeTimeoutsIterUnreadableLogPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	badPath := filepath.Join(dir, "unreadable.log")
+	require.NoError(t, os.WriteFile(
+		badPath,
+		[]byte("panic: test timed out\n\trunning tests:\n\t\tTestSlow (5s)\n"),
+		0o600,
+	))
+	require.NoError(t, os.Chmod(badPath, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(badPath, 0o600) })
+
+	aggs := map[testKey]*aggregate{
+		{Package: "p", Test: "TestFast"}: {
+			timedOut:     true,
+			timeoutIters: []int{0},
+			logPaths:     map[int]string{0: badPath},
+		},
+	}
+	err := reattributeTimeoutsIter(aggs, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reattribute timeouts iter 0")
+}
+
+func TestScanIterationJSONLFlushOutputFailure(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	notADir := filepath.Join(dir, "notadir")
+	require.NoError(t, os.WriteFile(notADir, []byte("x"), 0o600))
+
+	chunk := strings.Repeat("x", 400*1024)
+	line, err := json.Marshal(map[string]string{
+		"Action":  "output",
+		"Package": "p",
+		"Test":    "T",
+		"Output":  chunk,
+	})
+	require.NoError(t, err)
+	var b strings.Builder
+	for range 100 {
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+
+	aggs := make(map[testKey]*aggregate)
+	err = scanIterationJSONL(strings.NewReader(b.String()), 0, aggs, nil, 0, newStringInterner(), notADir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "flush output")
+}
+
 func TestPrintSummaryTimeoutShowsTestNotPassCounts(t *testing.T) {
 	t.Parallel()
 	rep := &Report{
