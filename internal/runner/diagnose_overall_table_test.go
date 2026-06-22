@@ -14,7 +14,7 @@ import (
 
 func TestRenderOverallRatesTable_allClear(t *testing.T) {
 	t.Parallel()
-	rep, _, err := Analyze(
+	rep, _, _, err := Analyze(
 		readers(`{"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}`),
 		30*time.Second,
 	)
@@ -28,7 +28,7 @@ func TestRenderOverallRatesTable_allClear(t *testing.T) {
 
 func TestRenderOverallRatesTable_flakyRow(t *testing.T) {
 	t.Parallel()
-	rep, _, err := Analyze(readers(
+	rep, _, _, err := Analyze(readers(
 		`{"Action":"fail","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)
@@ -44,7 +44,7 @@ func TestRenderOverallRatesTable_flakyRow(t *testing.T) {
 
 func TestOverallScopeAndWallLine(t *testing.T) {
 	t.Parallel()
-	rep, _, err := Analyze(
+	rep, _, _, err := Analyze(
 		readers(`{"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}`),
 		30*time.Second,
 	)
@@ -104,7 +104,7 @@ func TestBuildOverallRateRows_flakyIterationsLast(t *testing.T) {
 
 func TestFormatOverallFlakyIterRate_CIColoredByGap(t *testing.T) {
 	t.Parallel()
-	rep, _, err := Analyze(readers(
+	rep, _, _, err := Analyze(readers(
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)

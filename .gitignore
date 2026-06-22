@@ -4,6 +4,8 @@ out/
 
 # Temp files
 x.*
+*.out
+*.test
 
 diagnose-*/
 

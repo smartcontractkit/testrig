@@ -1,0 +1,9 @@
+
+Opening perfetto.dev trace tabs in browser...
+goos: darwin
+goarch: arm64
+pkg: github.com/smartcontractkit/testrig/internal/runner
+cpu: Apple M3 Max
+BenchmarkAnalyze_RealThreeIterations-14    	    4772	    257904 ns/op	 423.16 MB/s	  104149 B/op	     671 allocs/op
+PASS
+ok  	github.com/smartcontractkit/testrig/internal/runner	2.601s

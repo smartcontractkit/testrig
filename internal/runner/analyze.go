@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"crypto/sha256"
 	"encoding/csv"
@@ -36,7 +37,8 @@ type TestEvent struct {
 	Package     string
 	Test        string
 	Elapsed     float64
-	Output      string
+	Output      string `json:"Output"`
+	OutputBytes []byte `json:"-"`
 	FailedBuild string
 }
 
@@ -89,6 +91,7 @@ type aggregate struct {
 	skipIters    []int
 	slowIters    []int
 	outputs      map[int]*strings.Builder
+	logPaths     map[int]string
 	elapseds     []time.Duration
 }
 
@@ -244,23 +247,35 @@ var readerPool = sync.Pool{
 
 // Analyze reads per-iteration test2json streams and classifies tests.
 // Malformed lines are silently skipped (go test can interleave non-JSON).
-func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogMap, error) {
+func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogMap, func(), error) {
+	tmpDir, err := os.MkdirTemp("", "testrig-analyze-*")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(tmpDir)
+	}
+
 	aggs := make(map[testKey]*aggregate)
 	interner := newStringInterner()
 	for i, r := range iterations {
 		if err := scanIterationJSONL(r, i, aggs, nil, slowThreshold, interner); err != nil {
-			return nil, nil, err
+			cleanup()
+			return nil, nil, nil, err
+		}
+		reattributeTimeoutsIter(aggs, i)
+		if err := flushOutputsToDisk(i, aggs, tmpDir); err != nil {
+			cleanup()
+			return nil, nil, nil, err
 		}
 	}
-	reattributeTimeouts(aggs, newAggregate)
 	rep, logs := buildReportFromAggs(aggs, len(iterations), slowThreshold)
-	return rep, logs, nil
+	return rep, logs, cleanup, nil
 }
 
 func newAggregate() *aggregate {
 	return &aggregate{
 		lastRunIter: -1,
-		outputs:     map[int]*strings.Builder{},
 	}
 }
 
@@ -273,13 +288,13 @@ func (a *aggregate) recordElapsed(d time.Duration) {
 
 // parseTestEvent parses a single JSONL test event into ev. If interner is not nil,
 // it deduplicates Action, Package, and Test strings.
-func parseTestEvent(line []byte, ev *TestEvent, interner *stringInterner) error {
+func parseTestEvent(line []byte, ev *TestEvent, interner *stringInterner, parseTime bool, customBuf []byte) error {
 	return jsonparser.ObjectEach(
 		line,
 		func(key []byte, value []byte, dataType jsonparser.ValueType, _ int) error {
 			switch string(key) {
 			case "Time":
-				if dataType == jsonparser.String {
+				if parseTime && dataType == jsonparser.String {
 					s, _ := jsonparser.ParseString(value)
 					ev.Time, _ = time.Parse(time.RFC3339Nano, s)
 				}
@@ -307,8 +322,10 @@ func parseTestEvent(line []byte, ev *TestEvent, interner *stringInterner) error 
 				}
 			case "Output":
 				if dataType == jsonparser.String {
-					s, _ := jsonparser.ParseString(value)
-					ev.Output = s
+					// We only unescape here to get a flat byte slice to write.
+					// Often this does not allocate if there are no escapes.
+					b, _ := jsonparser.Unescape(value, customBuf)
+					ev.OutputBytes = b
 				}
 			case "FailedBuild":
 				if dataType == jsonparser.String {
@@ -338,6 +355,8 @@ func scanIterationJSONL(
 		readerPool.Put(reader)
 	}()
 
+	customBuf := make([]byte, 0, 8192)
+
 	for {
 		line, err := reader.ReadSlice('\n')
 		if err == bufio.ErrBufferFull {
@@ -348,7 +367,8 @@ func scanIterationJSONL(
 
 		if len(line) > 0 && line[0] == '{' {
 			var ev TestEvent
-			err := parseTestEvent(line, &ev, interner)
+			customBuf = customBuf[:0]
+			err := parseTestEvent(line, &ev, interner, false, customBuf)
 			if err == nil {
 				applyTestEvent(aggs, iterIdx, &ev, meta, slowThreshold)
 			}
@@ -415,18 +435,21 @@ func applyTestEvent(
 			delete(a.outputs, iterIdx)
 		}
 	case "output":
-		if strings.Contains(ev.Output, timeoutPanic) {
+		if bytes.Contains(ev.OutputBytes, []byte(timeoutPanic)) {
 			a.timedOut = true
 			if len(a.timeoutIters) == 0 || a.timeoutIters[len(a.timeoutIters)-1] != iterIdx {
 				a.timeoutIters = append(a.timeoutIters, iterIdx)
 			}
+		}
+		if a.outputs == nil {
+			a.outputs = make(map[int]*strings.Builder)
 		}
 		buf := a.outputs[iterIdx]
 		if buf == nil {
 			buf = &strings.Builder{}
 			a.outputs[iterIdx] = buf
 		}
-		buf.WriteString(ev.Output)
+		buf.Write(ev.OutputBytes)
 	}
 }
 
@@ -707,7 +730,7 @@ func DigestIterationJSONL(r io.Reader, slowThreshold time.Duration) (IterationDi
 	if err := scanIterationJSONL(r, 0, aggs, &meta, slowThreshold, interner); err != nil {
 		return IterationDigest{}, err
 	}
-	reattributeTimeouts(aggs, newAggregate)
+	reattributeTimeoutsIter(aggs, 0)
 	ran := countNamedTestsRanInAggs(aggs)
 	rep, _ := buildReportFromAggs(aggs, 1, slowThreshold)
 	d := iterationDigestFromReport(rep)
@@ -755,10 +778,19 @@ func timedOutTestNamesFromReport(rep *Report) []string {
 
 // AnalyzeResults opens every `iteration-*.log.jsonl` file in resultsDir, in
 // numeric-iteration order, and delegates to Analyze.
-func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, LogMap, error) {
+func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, LogMap, func(), error) {
+	tmpDir, err := os.MkdirTemp("", "testrig-analyze-*")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(tmpDir)
+	}
+
 	matches, err := filepath.Glob(filepath.Join(resultsDir, "iteration-*.log.jsonl"))
 	if err != nil {
-		return nil, nil, err
+		cleanup()
+		return nil, nil, nil, err
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		return iterNumber(matches[i]) < iterNumber(matches[j])
@@ -774,12 +806,17 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 			defer func() { _ = f.Close() }()
 			return scanIterationJSONL(f, i, aggs, nil, slowThreshold, interner)
 		}(); err != nil {
-			return nil, nil, err
+			cleanup()
+			return nil, nil, nil, err
+		}
+		reattributeTimeoutsIter(aggs, i)
+		if err := flushOutputsToDisk(i, aggs, tmpDir); err != nil {
+			cleanup()
+			return nil, nil, nil, err
 		}
 	}
-	reattributeTimeouts(aggs, newAggregate)
 	rep, logs := buildReportFromAggs(aggs, len(matches), slowThreshold)
-	return rep, logs, nil
+	return rep, logs, cleanup, nil
 }
 
 // WriteReport writes the report as pretty JSON to <resultsDir>/report.json.
@@ -791,7 +828,7 @@ func WriteReport(resultsDir string, rep *Report) error {
 	return os.WriteFile(filepath.Join(resultsDir, "report.json"), b, 0600)
 }
 
-// WriteLogFiles writes per-test per-iteration log files under <resultsDir>/logs/
+// WriteLogFiles moves per-test per-iteration temporary log files into <resultsDir>/logs/
 // for flagged tests and populates each flagged TestEntry's Logs slice with a
 // compact problem-kind, iteration-range, and path pattern.
 func WriteLogFiles(resultsDir string, rep *Report, logs LogMap) error {
@@ -813,8 +850,8 @@ func WriteLogFiles(resultsDir string, rep *Report, logs LogMap) error {
 			budgetIteration := longestIterationString(iterations)
 			written := make([]int, 0, len(iterations))
 			for _, it := range iterations {
-				out := m[it]
-				if out == "" {
+				tmpPath := m[it]
+				if tmpPath == "" {
 					continue
 				}
 				name := diagnoseLogFilenameForIterWithBudget(
@@ -824,9 +861,20 @@ func WriteLogFiles(resultsDir string, rep *Report, logs LogMap) error {
 					budgetIteration,
 				)
 				abs := filepath.Join(logsDir, name)
-				if err := os.WriteFile(abs, []byte(out), 0600); err != nil {
-					return err
+
+				// Rename the temporary file to the final destination
+				if err := os.Rename(tmpPath, abs); err != nil {
+					// Fallback to copy if rename fails across filesystems
+					content, readErr := os.ReadFile(tmpPath) //nolint:gosec
+					if readErr != nil {
+						return readErr
+					}
+					if writeErr := os.WriteFile(abs, content, 0600); writeErr != nil { //nolint:gosec
+						return writeErr
+					}
+					_ = os.Remove(tmpPath)
 				}
+
 				written = append(written, it)
 			}
 			if len(written) > 0 {
@@ -1201,12 +1249,7 @@ func flakeFailRatio(e TestEntry) float64 {
 	return float64(e.Fails) / float64(runs)
 }
 
-// reattributeTimeouts fixes the go-test-json quirk where a `panic: test timed out`
-// is attached to whichever test most recently emitted events rather than the
-// actually-stuck one. The real culprits are listed in the panic's
-// "running tests:" block — move the timeout mark (and the captured stack
-// trace) onto those tests.
-func reattributeTimeouts(aggs map[testKey]*aggregate, newAgg func() *aggregate) {
+func reattributeTimeoutsIter(aggs map[testKey]*aggregate, i int) {
 	keys := make([]testKey, 0, len(aggs))
 	for k := range aggs {
 		keys = append(keys, k)
@@ -1216,49 +1259,82 @@ func reattributeTimeouts(aggs map[testKey]*aggregate, newAgg func() *aggregate) 
 		if !a.timedOut {
 			continue
 		}
-		var keptTimeouts []int
-		for _, i := range a.timeoutIters {
-			buf := a.outputs[i]
-			if buf == nil {
-				keptTimeouts = append(keptTimeouts, i)
-				continue
-			}
-			output := buf.String()
-			names := parseRunningTests(output)
-			if len(names) == 0 {
-				keptTimeouts = append(keptTimeouts, i)
-				continue
-			}
-			if slices.Contains(names, key.Test) {
-				keptTimeouts = append(keptTimeouts, i)
-				continue
-			}
-			for _, name := range names {
-				nk := testKey{Package: key.Package, Test: name}
-				na := aggs[nk]
-				if na == nil {
-					na = newAgg()
-					aggs[nk] = na
-				}
-				na.timedOut = true
-				if len(na.timeoutIters) == 0 || na.timeoutIters[len(na.timeoutIters)-1] != i {
-					na.timeoutIters = append(na.timeoutIters, i)
-				}
-				if na.lastRunIter != i {
-					na.runs++
-					na.lastRunIter = i
-				}
-				if na.outputs[i] == nil {
-					na.outputs[i] = &strings.Builder{}
-				}
-				_, _ = na.outputs[i].WriteString(output)
-			}
+		if len(a.timeoutIters) == 0 || a.timeoutIters[len(a.timeoutIters)-1] != i {
+			continue
 		}
-		a.timeoutIters = keptTimeouts
+		buf := a.outputs[i]
+		if buf == nil {
+			continue
+		}
+		output := buf.String()
+		names := parseRunningTests(output)
+		if len(names) == 0 || slices.Contains(names, key.Test) {
+			continue
+		}
+
+		// Remove the timeout from the parent
+		a.timeoutIters = a.timeoutIters[:len(a.timeoutIters)-1]
 		if len(a.timeoutIters) == 0 {
 			a.timedOut = false
 		}
+
+		for _, name := range names {
+			nk := testKey{Package: key.Package, Test: name}
+			na := aggs[nk]
+			if na == nil {
+				na = newAggregate()
+				aggs[nk] = na
+			}
+			na.timedOut = true
+			if len(na.timeoutIters) == 0 || na.timeoutIters[len(na.timeoutIters)-1] != i {
+				na.timeoutIters = append(na.timeoutIters, i)
+			}
+			if na.lastRunIter != i {
+				na.runs++
+				na.lastRunIter = i
+			}
+			if na.outputs == nil {
+				na.outputs = make(map[int]*strings.Builder)
+			}
+			if na.outputs[i] == nil {
+				na.outputs[i] = &strings.Builder{}
+			}
+			_, _ = na.outputs[i].WriteString(output)
+		}
 	}
+}
+
+func flushOutputsToDisk(iterIdx int, aggs map[testKey]*aggregate, tmpDir string) error {
+	for _, a := range aggs {
+		if a.outputs == nil {
+			continue
+		}
+		buf := a.outputs[iterIdx]
+		if buf == nil {
+			continue
+		}
+
+		f, err := os.CreateTemp(tmpDir, "log-*")
+		if err != nil {
+			return err
+		}
+		_, err = f.WriteString(buf.String())
+		if err != nil {
+			_ = f.Close()
+			return err
+		}
+		name := f.Name()
+		_ = f.Close()
+
+		if a.logPaths == nil {
+			a.logPaths = make(map[int]string)
+		}
+		a.logPaths[iterIdx] = name
+
+		// Free the memory
+		delete(a.outputs, iterIdx)
+	}
+	return nil
 }
 
 // parseRunningTests extracts test names from a `panic: test timed out` block:
@@ -1307,13 +1383,13 @@ func parseRunningTests(output string) []string {
 func buildLogMap(aggs map[testKey]*aggregate) LogMap {
 	out := LogMap{}
 	for k, a := range aggs {
-		if len(a.outputs) == 0 {
+		if len(a.logPaths) == 0 {
 			continue
 		}
 		m := map[int]string{}
-		for i, buf := range a.outputs {
-			if buf != nil && buf.Len() > 0 {
-				m[i] = buf.String()
+		for i, p := range a.logPaths {
+			if p != "" {
+				m[i] = p
 			}
 		}
 		if len(m) > 0 {

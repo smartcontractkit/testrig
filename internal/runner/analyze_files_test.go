@@ -19,7 +19,7 @@ func TestWriteLogFiles(t *testing.T) {
 {"Action":"fail","Package":"github.com/foo/bar","Test":"TestFail","Elapsed":0.1}
 `
 	dir := t.TempDir()
-	rep, logs, err := Analyze(readers(iter), 30*time.Second)
+	rep, logs, _, err := Analyze(readers(iter), 30*time.Second)
 	require.NoError(t, err)
 	require.Len(t, rep.Failures, 1)
 
@@ -48,7 +48,7 @@ func TestWriteLogFilesWritesOnlyProblemIterations(t *testing.T) {
 `,
 	}
 	dir := t.TempDir()
-	rep, logs, err := Analyze(readers(iters...), 30*time.Second)
+	rep, logs, _, err := Analyze(readers(iters...), 30*time.Second)
 	require.NoError(t, err)
 	require.Len(t, rep.Flakes, 1)
 
@@ -84,7 +84,7 @@ func TestWriteLogFilesCompressesSlowIterations(t *testing.T) {
 `,
 	}
 	dir := t.TempDir()
-	rep, logs, err := Analyze(readers(iters...), 30*time.Second)
+	rep, logs, _, err := Analyze(readers(iters...), 30*time.Second)
 	require.NoError(t, err)
 	require.Len(t, rep.Slow, 1)
 
@@ -103,7 +103,7 @@ func TestWriteLogFilesTruncatesLongFilenames(t *testing.T) {
 {"Action":"fail","Package":"github.com/foo/bar","Test":"` + longTest + `","Elapsed":0.1}
 `
 	dir := t.TempDir()
-	rep, logs, err := Analyze(readers(iter), 30*time.Second)
+	rep, logs, _, err := Analyze(readers(iter), 30*time.Second)
 	require.NoError(t, err)
 	require.Len(t, rep.Failures, 1)
 
@@ -155,7 +155,7 @@ func TestWriteLogFilesNoLogsForNonFlaggedTests(t *testing.T) {
 {"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}
 `
 	dir := t.TempDir()
-	rep, logs, err := Analyze(readers(iter), 30*time.Second)
+	rep, logs, _, err := Analyze(readers(iter), 30*time.Second)
 	require.NoError(t, err)
 	assert.Empty(t, rep.Flakes)
 	assert.Empty(t, rep.Failures)
@@ -185,7 +185,7 @@ func TestWriteCSV(t *testing.T) {
 `,
 	}
 	dir := t.TempDir()
-	rep, _, err := Analyze(readers(iters...), 30*time.Second)
+	rep, _, _, err := Analyze(readers(iters...), 30*time.Second)
 	require.NoError(t, err)
 	require.NoError(t, WriteCSV(dir, rep))
 
@@ -226,7 +226,7 @@ func TestWriteCSVRenamesSlowWhenAlsoTimeout(t *testing.T) {
 {"Action":"fail","Package":"p","Test":"T","Elapsed":600.0}
 `
 	dir := t.TempDir()
-	rep, _, err := Analyze(readers(iter), 30*time.Second)
+	rep, _, _, err := Analyze(readers(iter), 30*time.Second)
 	require.NoError(t, err)
 	require.NoError(t, WriteCSV(dir, rep))
 
