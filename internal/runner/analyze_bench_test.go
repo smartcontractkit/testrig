@@ -41,7 +41,7 @@ func BenchmarkAnalyze_RealThreeIterations(b *testing.B) {
 		for i, p := range payloads {
 			rs[i] = bytes.NewReader(p)
 		}
-		_, _, err := Analyze(rs, benchSlowThreshold)
+		_, _, _, err := Analyze(rs, benchSlowThreshold)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -76,13 +76,13 @@ func BenchmarkAnalyzeResults_RealDir(b *testing.B) {
 	for _, p := range payloads {
 		total += int64(len(p))
 	}
-	if _, _, err := AnalyzeResults(dir, benchSlowThreshold); err != nil {
+	if _, _, _, err := AnalyzeResults(dir, benchSlowThreshold); err != nil {
 		b.Fatalf("warm-up AnalyzeResults: %v", err)
 	}
 	b.ReportAllocs()
 	b.SetBytes(total)
 	for b.Loop() {
-		_, _, err := AnalyzeResults(dir, benchSlowThreshold)
+		_, _, _, err := AnalyzeResults(dir, benchSlowThreshold)
 		if err != nil {
 			b.Fatal(err)
 		}

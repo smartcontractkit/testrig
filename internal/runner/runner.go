@@ -236,7 +236,11 @@ func FinishDiagnoseAnalysis(
 	var report *Report
 	var logs LogMap
 	var analyzeErr error
-	report, logs, analyzeErr = AnalyzeResults(resultsDir, conf.SlowThreshold)
+	var cleanup func()
+	report, logs, cleanup, analyzeErr = AnalyzeResults(resultsDir, conf.SlowThreshold)
+	if cleanup != nil {
+		defer cleanup()
+	}
 	stopAnalyzing(analyzeErr)
 	if analyzeErr != nil {
 		out.Stderrf("analyze results: %v\n", analyzeErr)

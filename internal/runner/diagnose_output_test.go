@@ -17,7 +17,7 @@ import (
 
 func TestMarshalAIDiagnoseComplete(t *testing.T) {
 	t.Parallel()
-	rep, _, err := Analyze(readers(
+	rep, _, _, err := Analyze(readers(
 		`{"Action":"fail","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)
@@ -93,7 +93,7 @@ func TestFormatSummaryFlatLine(t *testing.T) {
 
 func TestPrintSummaryVerdict_noIssues(t *testing.T) {
 	t.Parallel()
-	rep, _, err := Analyze(
+	rep, _, _, err := Analyze(
 		readers(`{"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}`),
 		30*time.Second,
 	)

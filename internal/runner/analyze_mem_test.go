@@ -40,7 +40,7 @@ func TestAnalyzeMemory_Limit(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 
-	rep, _, err := Analyze(readers, 30*time.Second)
+	rep, _, _, err := Analyze(readers, 30*time.Second)
 	require.NoError(t, err)
 
 	runtime.ReadMemStats(&after)

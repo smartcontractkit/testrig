@@ -72,8 +72,8 @@ type testState struct {
 	elapsed    float64
 }
 
-func (ts *testState) addOutput(s string) {
-	ts.output = append(ts.output, s...)
+func (ts *testState) addOutput(b []byte) {
+	ts.output = append(ts.output, b...)
 	if len(ts.output) > maxOutputSize {
 		ts.output = ts.output[len(ts.output)-maxOutputSize:]
 		ts.truncated = true
@@ -135,7 +135,7 @@ func scanTraceEvents(
 			continue
 		}
 		var ev TestEvent
-		err := parseTestEvent(line, &ev, nil)
+		err := parseTestEvent(line, &ev, nil, true, nil)
 		if err != nil {
 			if out != nil {
 				out.Stderrf("trace: skip malformed jsonl (iteration %d): %v\n", iter, err)
@@ -168,7 +168,7 @@ func scanTraceEvents(
 		case "cont":
 			ts.contTime = ev.Time
 		case "output":
-			ts.addOutput(ev.Output)
+			ts.addOutput(ev.OutputBytes)
 		case "pass", "fail", "skip":
 			ts.endTime = ev.Time
 			ts.status = ev.Action

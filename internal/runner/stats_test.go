@@ -117,7 +117,7 @@ func TestFormatFlakyTestLine_packageLevel_includesCI(t *testing.T) {
 
 func TestReportSummary_hasCI(t *testing.T) {
 	t.Parallel()
-	rep, _, err := Analyze(readers(
+	rep, _, _, err := Analyze(readers(
 		`{"Action":"fail","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)
@@ -140,7 +140,7 @@ func TestReportSummary_hasCI(t *testing.T) {
 
 func TestPrintOverallStats_includesCI(t *testing.T) {
 	t.Parallel()
-	rep, _, err := Analyze(readers(
+	rep, _, _, err := Analyze(readers(
 		`{"Action":"fail","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)
@@ -155,7 +155,7 @@ func TestPrintOverallStats_includesCI(t *testing.T) {
 
 func TestReportSummary_hasCI_noFlakes(t *testing.T) {
 	t.Parallel()
-	rep, _, err := Analyze(readers(
+	rep, _, _, err := Analyze(readers(
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)
@@ -171,7 +171,7 @@ func TestReportSummary_hasCI_noFlakes(t *testing.T) {
 
 func TestPrintOverallStats_includesCI_noFlakes(t *testing.T) {
 	t.Parallel()
-	rep, _, err := Analyze(readers(
+	rep, _, _, err := Analyze(readers(
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.5}`,
 		`{"Action":"pass","Package":"pkg/foo","Test":"TestX","Elapsed":0.4}`,
 	), 30*time.Second)
