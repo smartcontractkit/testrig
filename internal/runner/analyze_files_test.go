@@ -19,8 +19,7 @@ func TestWriteLogFiles(t *testing.T) {
 {"Action":"fail","Package":"github.com/foo/bar","Test":"TestFail","Elapsed":0.1}
 `
 	dir := t.TempDir()
-	rep, logs, _, err := Analyze(readers(iter), 30*time.Second)
-	require.NoError(t, err)
+	rep, logs := analyze(t, readers(iter), 30*time.Second)
 	require.Len(t, rep.Failures, 1)
 
 	require.NoError(t, WriteLogFiles(dir, rep, logs))
@@ -48,8 +47,7 @@ func TestWriteLogFilesWritesOnlyProblemIterations(t *testing.T) {
 `,
 	}
 	dir := t.TempDir()
-	rep, logs, _, err := Analyze(readers(iters...), 30*time.Second)
-	require.NoError(t, err)
+	rep, logs := analyze(t, readers(iters...), 30*time.Second)
 	require.Len(t, rep.Flakes, 1)
 
 	require.NoError(t, WriteLogFiles(dir, rep, logs))
@@ -84,8 +82,7 @@ func TestWriteLogFilesCompressesSlowIterations(t *testing.T) {
 `,
 	}
 	dir := t.TempDir()
-	rep, logs, _, err := Analyze(readers(iters...), 30*time.Second)
-	require.NoError(t, err)
+	rep, logs := analyze(t, readers(iters...), 30*time.Second)
 	require.Len(t, rep.Slow, 1)
 
 	require.NoError(t, WriteLogFiles(dir, rep, logs))
@@ -103,8 +100,7 @@ func TestWriteLogFilesTruncatesLongFilenames(t *testing.T) {
 {"Action":"fail","Package":"github.com/foo/bar","Test":"` + longTest + `","Elapsed":0.1}
 `
 	dir := t.TempDir()
-	rep, logs, _, err := Analyze(readers(iter), 30*time.Second)
-	require.NoError(t, err)
+	rep, logs := analyze(t, readers(iter), 30*time.Second)
 	require.Len(t, rep.Failures, 1)
 
 	require.NoError(t, WriteLogFiles(dir, rep, logs))
@@ -155,8 +151,7 @@ func TestWriteLogFilesNoLogsForNonFlaggedTests(t *testing.T) {
 {"Action":"pass","Package":"p","Test":"T","Elapsed":0.01}
 `
 	dir := t.TempDir()
-	rep, logs, _, err := Analyze(readers(iter), 30*time.Second)
-	require.NoError(t, err)
+	rep, logs := analyze(t, readers(iter), 30*time.Second)
 	assert.Empty(t, rep.Flakes)
 	assert.Empty(t, rep.Failures)
 	assert.Empty(t, rep.Timeouts)
@@ -174,8 +169,7 @@ func TestWriteLogFilesSkipsMissingTempPath(t *testing.T) {
 {"Action":"fail","Package":"p","Test":"T","Elapsed":0.01}
 `
 	dir := t.TempDir()
-	rep, logs, _, err := Analyze(readers(iter), 30*time.Second)
-	require.NoError(t, err)
+	rep, logs := analyze(t, readers(iter), 30*time.Second)
 	require.Len(t, rep.Failures, 1)
 
 	key := testKey{Package: "p", Test: "T"}
@@ -208,8 +202,7 @@ func TestWriteCSV(t *testing.T) {
 `,
 	}
 	dir := t.TempDir()
-	rep, _, _, err := Analyze(readers(iters...), 30*time.Second)
-	require.NoError(t, err)
+	rep, _ := analyze(t, readers(iters...), 30*time.Second)
 	require.NoError(t, WriteCSV(dir, rep))
 
 	f, err := os.Open(filepath.Join(dir, "report.csv")) //nolint:gosec // G304: path from filepath.Join
@@ -249,8 +242,7 @@ func TestWriteCSVRenamesSlowWhenAlsoTimeout(t *testing.T) {
 {"Action":"fail","Package":"p","Test":"T","Elapsed":600.0}
 `
 	dir := t.TempDir()
-	rep, _, _, err := Analyze(readers(iter), 30*time.Second)
-	require.NoError(t, err)
+	rep, _ := analyze(t, readers(iter), 30*time.Second)
 	require.NoError(t, WriteCSV(dir, rep))
 
 	b, err := os.ReadFile(filepath.Join(dir, "report.csv")) //nolint:gosec // G304: path from filepath.Join
