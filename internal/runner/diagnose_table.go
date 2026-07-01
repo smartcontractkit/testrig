@@ -81,11 +81,16 @@ func formatDiagnoseIterationTableRow(iter int, d IterationDigest, dur time.Durat
 func diagnoseTableCountStyled(n int, kind string) string {
 	s := strconv.Itoa(n)
 	switch kind {
-	case "fail", "timeout", "race":
+	case "fail", "timeout":
 		if n == 0 {
 			return termstyle.OK.Render(s)
 		}
 		return termstyle.Bad.Render(s)
+	case "race":
+		if n == 0 {
+			return termstyle.OK.Render(s)
+		}
+		return termstyle.Flaky.Render(s)
 	case "slow":
 		if n == 0 {
 			return termstyle.OK.Render(s)

@@ -576,10 +576,10 @@ func categorizeAggregates(
 		}
 
 		switch {
-		case a.timedOut:
-			rep.Timeouts = append(rep.Timeouts, base)
 		case len(a.raceIters) > 0:
 			rep.Races = append(rep.Races, base)
+		case a.timedOut:
+			rep.Timeouts = append(rep.Timeouts, base)
 		case key.Test == "" && a.fails == 0:
 			// Package-level pass summary or benign events (no failing tests).
 		case key.Test == "" && a.fails > 0:
@@ -882,19 +882,36 @@ func iterationDigestFromReport(rep *Report) IterationDigest {
 		FailTests:     len(s.FailingTests),
 		Races:         s.Races,
 		SlowTests:     slowTests,
-		TimeoutTests:  len(rep.Timeouts),
+		TimeoutTests:  len(timedOutEntriesFromReport(rep)),
 		FailingTests:  append([]string(nil), s.FailingTests...),
 		RacingTests:   append([]string(nil), s.RacingTests...),
 		TimedOutTests: timedOutTestNamesFromReport(rep),
 	}
 }
 
-func timedOutTestNamesFromReport(rep *Report) []string {
-	if len(rep.Timeouts) == 0 {
+func timedOutEntriesFromReport(rep *Report) []TestEntry {
+	if rep == nil {
 		return nil
 	}
-	names := make([]string, 0, len(rep.Timeouts))
-	for _, e := range rep.Timeouts {
+	var out []TestEntry
+	for _, group := range rep.TestGroups() {
+		for _, e := range *group.Entries {
+			if len(e.TimeoutIters) == 0 {
+				continue
+			}
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func timedOutTestNamesFromReport(rep *Report) []string {
+	entries := timedOutEntriesFromReport(rep)
+	if len(entries) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
 		name := e.Test
 		if name == "" {
 			name = e.Package
@@ -1230,7 +1247,7 @@ func PrintSummary(w io.Writer, rep *Report) {
 				}
 				return races[i].Test < races[j].Test
 			})
-			printSummarySectionFlat(w, "Races", n, races, termstyle.Accent, termstyle.Accent, formatRaceStats)
+			printSummarySectionFlat(w, "Races", n, races, termstyle.Flaky, termstyle.Flaky, formatRaceStats)
 		}
 	}
 

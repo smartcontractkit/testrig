@@ -545,17 +545,19 @@ func runDiagnoseIterations(
 		parallel = len(resources)
 	}
 	resources = resources[:parallel]
+	raceEnabled := goTestRaceEnabled(adjustedArgs)
+	tableOpts := DiagnoseTableOpts{RaceEnabled: raceEnabled}
 	state := &DiagnoseRunState{
 		iterDurations:       make([]time.Duration, conf.Iterations),
 		failedFastIteration: -1,
-		tableOpts:           DiagnoseTableOpts{RaceEnabled: goTestRaceEnabled(adjustedArgs)},
+		tableOpts:           tableOpts,
 	}
 	if conf.Shuffle {
 		state.shuffleSeeds = make(map[int]int64)
 	}
 
 	if !out.AIOutput() {
-		printDiagnoseIterationTableHeader(out, DiagnoseTableOpts{RaceEnabled: goTestRaceEnabled(adjustedArgs)})
+		printDiagnoseIterationTableHeader(out, tableOpts)
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)

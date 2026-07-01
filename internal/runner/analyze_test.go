@@ -351,7 +351,24 @@ func TestDigestIterationJSONL(t *testing.T) {
 		assert.Equal(t, "timeout+race", d.Result)
 		assert.Equal(t, 1, d.Races)
 		assert.Equal(t, 0, d.FailTests)
+		assert.Equal(t, 1, d.TimeoutTests)
+		assert.Equal(t, []string{"TestHang"}, d.TimedOutTests)
 	})
+}
+
+func TestAnalyzeTimeoutRaceGoesToRaces(t *testing.T) {
+	t.Parallel()
+	rep, _ := analyze(t, readers(
+		`{"Action":"output","Package":"p","Test":"TestHang","Output":"panic: test timed out after 2m0s\n"}
+{"Action":"output","Package":"p","Test":"TestHang","Output":"WARNING: DATA RACE\n"}
+{"Action":"fail","Package":"p","Test":"TestHang","Elapsed":120.0}`,
+	), 30*time.Second)
+	require.Len(t, rep.Races, 1)
+	assert.Equal(t, "TestHang", rep.Races[0].Test)
+	assert.Empty(t, rep.Timeouts)
+	assert.Empty(t, rep.Failures)
+	require.NotNil(t, rep.Summary)
+	assert.Equal(t, 1, rep.Summary.RaceNamedCount)
 }
 
 func TestAnalyzeDataRaceSeparation(t *testing.T) {
