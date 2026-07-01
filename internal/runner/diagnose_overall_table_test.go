@@ -82,21 +82,24 @@ func TestBuildOverallRateRows_flakyIterationsLast(t *testing.T) {
 	rep := &Report{
 		Iterations:    2,
 		SlowThreshold: time.Second,
+		Run:           &RunMeta{Race: true},
 		Summary: &ReportSummary{
 			DistinctNamedTests:     1,
 			FlakeIterationTotal:    2,
 			FlakeFailingIterations: 0,
 			SlowCount:              0,
 			SlowPrevalence:         &slowPrev,
+			RaceNamedCount:         1,
 		},
 	}
 	flakeIterRate := 0.0
 	rep.Summary.FlakeIterationFailRate = &flakeIterRate
 
 	rows := buildOverallRateRows(rep)
-	require.Len(t, rows, 4)
-	assert.Equal(t, "Slow Tests", rows[2].label)
-	assert.Equal(t, "Flaky Iterations", rows[3].label)
+	require.Len(t, rows, 5)
+	assert.Equal(t, "Races", rows[2].label)
+	assert.Equal(t, "Slow Tests", rows[3].label)
+	assert.Equal(t, "Flaky Iterations", rows[4].label)
 }
 
 func TestFormatOverallFlakyIterRate_CIColoredByGap(t *testing.T) {

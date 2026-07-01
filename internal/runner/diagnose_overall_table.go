@@ -18,6 +18,7 @@ const (
 	overallRateBroken overallRateKind = iota
 	overallRateFlaky
 	overallRateSlow
+	overallRateRace
 )
 
 type overallRateRow struct {
@@ -82,6 +83,15 @@ func buildOverallRateRows(rep *Report) []overallRateRow {
 		num:   s.FlakeNamedCount,
 		kind:  overallRateFlaky,
 	})
+	if rep.Run != nil && rep.Run.Race && s.RaceNamedCount > 0 {
+		rows = append(rows, overallRateRow{
+			label: "Races",
+			count: fmt.Sprintf("%d", s.RaceNamedCount),
+			rate:  formatOverallRatePct(s.RaceNamedCount, denom),
+			num:   s.RaceNamedCount,
+			kind:  overallRateRace,
+		})
+	}
 	if rep.SlowThreshold > 0 && s.SlowPrevalence != nil {
 		rows = append(rows, overallRateRow{
 			label: "Slow Tests",
@@ -134,6 +144,9 @@ func overallRatePctStyle(kind overallRateKind, num int) lipgloss.Style {
 	if kind == overallRateSlow {
 		return termstyle.Flaky
 	}
+	if kind == overallRateRace {
+		return termstyle.Flaky
+	}
 	return termstyle.Bad
 }
 
@@ -167,10 +180,12 @@ func overallRatesTableStyle(row, _ int) lipgloss.Style {
 
 func overallRateCountCell(r overallRateRow) string {
 	if r.num > 0 {
-		if r.kind == overallRateSlow {
+		switch r.kind {
+		case overallRateSlow, overallRateRace:
 			return termstyle.Flaky.Render(r.count)
+		default:
+			return termstyle.Bad.Render(r.count)
 		}
-		return termstyle.Bad.Render(r.count)
 	}
 	return termstyle.OK.Render(r.count)
 }

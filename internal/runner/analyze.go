@@ -30,6 +30,9 @@ const maxDiagnoseLogFilenameBytes = 240
 // -timeout fires. It may be attached to a running test or to the package.
 const timeoutPanic = "panic: test timed out"
 
+// dataRaceWarning appears in go test -json output when the race detector reports a race.
+const dataRaceWarning = "WARNING: DATA RACE"
+
 // TestEvent represents a parsed test event from the JSONL log stream.
 type TestEvent struct {
 	Time        time.Time
@@ -71,6 +74,7 @@ func (i *stringInterner) intern(b []byte) string {
 // iterationScanMeta collects signals during scan that are not represented in aggregates only.
 type iterationScanMeta struct {
 	sawFailedBuild bool
+	dataRaceCount  int
 }
 
 type testKey struct {
@@ -87,6 +91,7 @@ type aggregate struct {
 	lastRunIter  int
 	runs         int
 	failedIters  []int
+	raceIters    []int
 	timeoutIters []int
 	skipIters    []int
 	slowIters    []int
@@ -119,6 +124,7 @@ type TestEntry struct {
 	P50Elapsed    time.Duration `json:"p50_elapsed"`
 	Logs          []ProblemLog  `json:"logs,omitempty"`
 	FailIters     []int         `json:"-"`
+	RaceIters     []int         `json:"-"`
 	TimeoutIters  []int         `json:"-"`
 	SlowIters     []int         `json:"-"`
 }
@@ -128,8 +134,10 @@ type TestEntry struct {
 type IterationSummary struct {
 	Index        int           `json:"index"`
 	Duration     time.Duration `json:"duration,omitempty"`
-	Result       string        `json:"result"` // "pass", "fail", "timeout"
+	Result       string        `json:"result"` // "pass", "fail", "timeout", "race", "fail+race", "timeout+race"
 	FailingTests []string      `json:"failing_tests,omitempty"`
+	Races        int           `json:"races,omitempty"`
+	RacingTests  []string      `json:"racing_tests,omitempty"`
 	ShuffleSeed  int64         `json:"shuffle_seed,omitempty"`
 }
 
@@ -147,6 +155,7 @@ type RunMeta struct {
 	FailFast           bool          `json:"fail_fast,omitempty"`
 	FailFastOn         []string      `json:"fail_fast_on,omitempty"`
 	Shuffle            bool          `json:"shuffle,omitempty"`
+	Race               bool          `json:"race,omitempty"`
 }
 
 // ReportSummary holds aggregate flake and slow rates for the full diagnose run.
@@ -171,6 +180,8 @@ type ReportSummary struct {
 	FlakeIterationFailRateUpper *float64 `json:"flake_iteration_fail_rate_upper,omitempty"`
 	SlowCount                   int      `json:"slow_count,omitempty"`
 	SlowPrevalence              *float64 `json:"slow_prevalence,omitempty"`
+	RaceNamedCount              int      `json:"race_named_count,omitempty"`
+	RacePrevalence              *float64 `json:"race_prevalence,omitempty"`
 	// IterationDurationMin/Max/P50 summarize wall-clock runtimes (IterationSummary.Duration) across all completed iterations.
 	IterationDurationMin time.Duration `json:"iteration_duration_min,omitempty"`
 	IterationDurationMax time.Duration `json:"iteration_duration_max,omitempty"`
@@ -186,6 +197,7 @@ type Report struct {
 	IterationSummaries []IterationSummary `json:"iteration_summaries,omitempty"`
 	Flakes             []TestEntry        `json:"flakes,omitempty"`
 	Failures           []TestEntry        `json:"failures,omitempty"`
+	Races              []TestEntry        `json:"races,omitempty"`
 	Timeouts           []TestEntry        `json:"timeouts,omitempty"`
 	Slow               []TestEntry        `json:"slow,omitempty"`
 	SlowestPackages    []TestEntry        `json:"slowest_packages,omitempty"`
@@ -201,12 +213,18 @@ type TestGroup struct {
 }
 
 // TestGroups returns all flagged test categories in precedence order
-// (Timeout > Failure > Flake > Slow) for deduplication and output generation.
+// (Race > Timeout > Failure > Flake > Slow) for deduplication and output generation.
 func (rep *Report) TestGroups() []TestGroup {
 	if rep == nil {
 		return nil
 	}
 	return []TestGroup{
+		{
+			Entries:     &rep.Races,
+			LogKind:     "race",
+			CSVCategory: "race",
+			Iters:       func(e TestEntry) []int { return e.RaceIters },
+		},
 		{
 			Entries:     &rep.Timeouts,
 			LogKind:     "timeout",
@@ -258,10 +276,13 @@ func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogM
 
 	aggs := make(map[testKey]*aggregate)
 	interner := newStringInterner()
+	raceCounts := make([]int, len(iterations))
 	for i, r := range iterations {
-		if err := scanIterationJSONL(r, i, aggs, nil, slowThreshold, interner, tmpDir); err != nil {
+		var meta iterationScanMeta
+		if err := scanIterationJSONL(r, i, aggs, &meta, slowThreshold, interner, tmpDir); err != nil {
 			return nil, nil, cleanup, err
 		}
+		raceCounts[i] = meta.dataRaceCount
 		if err := reattributeTimeoutsIter(aggs, i, tmpDir); err != nil {
 			return nil, nil, cleanup, err
 		}
@@ -269,7 +290,7 @@ func Analyze(iterations []io.Reader, slowThreshold time.Duration) (*Report, LogM
 			return nil, nil, cleanup, err
 		}
 	}
-	rep, logs := buildReportFromAggs(aggs, len(iterations), slowThreshold)
+	rep, logs := buildReportFromAggs(aggs, len(iterations), slowThreshold, raceCounts)
 	return rep, logs, cleanup, nil
 }
 
@@ -444,24 +465,42 @@ func applyTestEvent(
 			delete(a.outputs, iterIdx)
 		}
 	case "output":
-		if bytes.Contains(ev.OutputBytes, []byte(timeoutPanic)) {
-			a.timedOut = true
-			if len(a.timeoutIters) == 0 || a.timeoutIters[len(a.timeoutIters)-1] != iterIdx {
-				a.timeoutIters = append(a.timeoutIters, iterIdx)
-			}
+		recordOutputEvent(iterIdx, ev, meta, a, totalBuffered)
+	}
+}
+
+func recordOutputEvent(
+	iterIdx int,
+	ev *TestEvent,
+	meta *iterationScanMeta,
+	a *aggregate,
+	totalBuffered *int,
+) {
+	if bytes.Contains(ev.OutputBytes, []byte(timeoutPanic)) {
+		a.timedOut = true
+		if len(a.timeoutIters) == 0 || a.timeoutIters[len(a.timeoutIters)-1] != iterIdx {
+			a.timeoutIters = append(a.timeoutIters, iterIdx)
 		}
-		if a.outputs == nil {
-			a.outputs = make(map[int]*bytes.Buffer)
+	}
+	if bytes.Contains(ev.OutputBytes, []byte(dataRaceWarning)) {
+		if meta != nil {
+			meta.dataRaceCount += bytes.Count(ev.OutputBytes, []byte(dataRaceWarning))
 		}
-		buf := a.outputs[iterIdx]
-		if buf == nil {
-			buf = &bytes.Buffer{}
-			a.outputs[iterIdx] = buf
+		if len(a.raceIters) == 0 || a.raceIters[len(a.raceIters)-1] != iterIdx {
+			a.raceIters = append(a.raceIters, iterIdx)
 		}
-		buf.Write(ev.OutputBytes)
-		if totalBuffered != nil {
-			*totalBuffered += len(ev.OutputBytes)
-		}
+	}
+	if a.outputs == nil {
+		a.outputs = make(map[int]*bytes.Buffer)
+	}
+	buf := a.outputs[iterIdx]
+	if buf == nil {
+		buf = &bytes.Buffer{}
+		a.outputs[iterIdx] = buf
+	}
+	buf.Write(ev.OutputBytes)
+	if totalBuffered != nil {
+		*totalBuffered += len(ev.OutputBytes)
 	}
 }
 
@@ -470,6 +509,7 @@ func buildReportFromAggs(
 	aggs map[testKey]*aggregate,
 	numIterations int,
 	slowThreshold time.Duration,
+	raceCounts []int,
 ) (*Report, LogMap) {
 	rep := &Report{
 		Iterations:    numIterations,
@@ -486,14 +526,19 @@ func buildReportFromAggs(
 
 	sortEntries(rep.Flakes)
 	sortEntries(rep.Failures)
+	sortEntries(rep.Races)
 	sortEntries(rep.Timeouts)
 	sortEntries(rep.Slow)
 
-	rep.IterationSummaries = buildIterationSummaries(aggs, numIterations)
+	rep.IterationSummaries = buildIterationSummaries(aggs, numIterations, raceCounts)
 	rep.Summary = buildReportSummary(rep, aggs, slowThreshold)
 
 	logs := buildLogMap(aggs)
 	return rep, logs
+}
+
+func aggregateRacedInIter(a *aggregate, iter int) bool {
+	return slices.Contains(a.raceIters, iter)
 }
 
 func categorizeAggregates(
@@ -522,6 +567,7 @@ func categorizeAggregates(
 			MaxElapsed:    a.maxElapsed,
 			P50Elapsed:    p50,
 			FailIters:     a.failedIters,
+			RaceIters:     a.raceIters,
 			TimeoutIters:  a.timeoutIters,
 			SlowIters:     a.slowIters,
 		}
@@ -530,6 +576,8 @@ func categorizeAggregates(
 		}
 
 		switch {
+		case len(a.raceIters) > 0:
+			rep.Races = append(rep.Races, base)
 		case a.timedOut:
 			rep.Timeouts = append(rep.Timeouts, base)
 		case key.Test == "" && a.fails == 0:
@@ -576,8 +624,9 @@ func computeSlowestPackages(pkgEntries []TestEntry, slowThreshold time.Duration)
 	return slowest
 }
 
-func buildIterationSummaries(aggs map[testKey]*aggregate, numIterations int) []IterationSummary {
+func buildIterationSummaries(aggs map[testKey]*aggregate, numIterations int, raceCounts []int) []IterationSummary {
 	iterFails := make(map[int][]string, numIterations)
+	iterRaces := make(map[int][]string, numIterations)
 	iterTimedOut := make(map[int]bool, numIterations)
 	iterPkgHasTestFail := make(map[int]map[string]bool, numIterations)
 	for key, a := range aggs {
@@ -590,38 +639,89 @@ func buildIterationSummaries(aggs map[testKey]*aggregate, numIterations int) []I
 			}
 			iterPkgHasTestFail[i][key.Package] = true
 		}
+		for _, i := range a.raceIters {
+			if iterPkgHasTestFail[i] == nil {
+				iterPkgHasTestFail[i] = make(map[string]bool)
+			}
+			iterPkgHasTestFail[i][key.Package] = true
+		}
 	}
 	for key, a := range aggs {
 		for _, i := range a.timeoutIters {
 			iterTimedOut[i] = true
 		}
-		failName := key.Test
-		if failName == "" {
-			failName = key.Package
+		name := key.Test
+		if name == "" {
+			name = key.Package
 		}
 		for _, i := range a.failedIters {
+			if aggregateRacedInIter(a, i) {
+				iterRaces[i] = append(iterRaces[i], name)
+				continue
+			}
 			if key.Test == "" && iterPkgHasTestFail[i][key.Package] {
 				continue
 			}
-			iterFails[i] = append(iterFails[i], failName)
+			iterFails[i] = append(iterFails[i], name)
+		}
+		for _, i := range a.raceIters {
+			if !aggregateFailedInIter(a, i) {
+				iterRaces[i] = append(iterRaces[i], name)
+			}
 		}
 	}
 	summaries := make([]IterationSummary, numIterations)
 	for i := range numIterations {
 		s := IterationSummary{Index: i}
+		if i < len(raceCounts) {
+			s.Races = raceCounts[i]
+		}
+		hasTimeout := iterTimedOut[i]
+		hasFail := len(iterFails[i]) > 0
+		hasRace := s.Races > 0 || len(iterRaces[i]) > 0
 		switch {
-		case iterTimedOut[i]:
+		case hasTimeout && hasRace:
+			s.Result = "timeout+race"
+		case hasTimeout:
 			s.Result = "timeout"
-		case len(iterFails[i]) > 0:
+		case hasFail && hasRace:
+			s.Result = "fail+race"
+			sort.Strings(iterFails[i])
+			s.FailingTests = iterFails[i]
+		case hasFail:
 			s.Result = "fail"
 			sort.Strings(iterFails[i])
 			s.FailingTests = iterFails[i]
+		case hasRace:
+			s.Result = "race"
 		default:
 			s.Result = "pass"
+		}
+		if hasRace {
+			names := iterRaces[i]
+			sort.Strings(names)
+			s.RacingTests = dedupeSortedStrings(names)
 		}
 		summaries[i] = s
 	}
 	return summaries
+}
+
+func aggregateFailedInIter(a *aggregate, iter int) bool {
+	return slices.Contains(a.failedIters, iter)
+}
+
+func dedupeSortedStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := append([]string(nil), in[0])
+	for i := 1; i < len(in); i++ {
+		if in[i] != out[len(out)-1] {
+			out = append(out, in[i])
+		}
+	}
+	return out
 }
 
 func buildReportSummary(rep *Report, aggs map[testKey]*aggregate, slowThreshold time.Duration) *ReportSummary {
@@ -650,6 +750,12 @@ func buildReportSummary(rep *Report, aggs map[testKey]*aggregate, slowThreshold 
 		}
 	}
 	slowCount := len(rep.Slow)
+	raceNamed := 0
+	for _, e := range rep.Races {
+		if e.Test != "" {
+			raceNamed++
+		}
+	}
 
 	s := &ReportSummary{
 		DistinctNamedTests: distinct,
@@ -657,6 +763,7 @@ func buildReportSummary(rep *Report, aggs map[testKey]*aggregate, slowThreshold 
 		FlakeFailRuns:      flakeFailRuns,
 		FlakeTotalRuns:     flakeTotalRuns,
 		SlowCount:          slowCount,
+		RaceNamedCount:     raceNamed,
 	}
 	if rep.Iterations > 0 {
 		s.FlakeFailingIterations = len(iterWithFlakeFail)
@@ -682,20 +789,26 @@ func buildReportSummary(rep *Report, aggs map[testKey]*aggregate, slowThreshold 
 		v := float64(slowCount) / float64(distinct)
 		s.SlowPrevalence = &v
 	}
+	if distinct > 0 && raceNamed > 0 {
+		v := float64(raceNamed) / float64(distinct)
+		s.RacePrevalence = &v
+	}
 	return s
 }
 
 // IterationDigest summarizes one iteration JSONL log for per-iteration CLI output.
 // Counts match a single-iteration Analyze (same rules as the final report).
 type IterationDigest struct {
-	Result        string   // pass, fail, timeout
+	Result        string   // pass, fail, timeout, race, fail+race, timeout+race
 	RanTests      int      // distinct named tests (package.test) that executed (pass/fail/timeout), excluding skip-only
 	FailTests     int      // len(IterationSummaries[0].FailingTests)
+	Races         int      // DATA RACE warnings in this iteration
 	TimeoutTests  int      // len(Timeouts) for this iteration
 	SkipTests     int      // distinct named tests skipped in this iteration
 	SlowTests     int      // tests over slow threshold
 	BuildFailure  bool     // compile/build failed or heuristic package-level fail with no named tests run
-	FailingTests  []string // named tests / packages that failed this iteration
+	FailingTests  []string // named tests / packages that failed this iteration (non-race)
+	RacingTests   []string // named tests that raced this iteration
 	TimedOutTests []string // named tests that timed out this iteration
 }
 
@@ -746,7 +859,7 @@ func DigestIterationJSONL(r io.Reader, slowThreshold time.Duration) (IterationDi
 		return IterationDigest{}, err
 	}
 	ran := countNamedTestsRanInAggs(aggs)
-	rep, _ := buildReportFromAggs(aggs, 1, slowThreshold)
+	rep, _ := buildReportFromAggs(aggs, 1, slowThreshold, []int{meta.dataRaceCount})
 	d := iterationDigestFromReport(rep)
 	d.RanTests = ran
 	d.SkipTests = countNamedTestsSkippedInAggs(aggs)
@@ -767,19 +880,38 @@ func iterationDigestFromReport(rep *Report) IterationDigest {
 	return IterationDigest{
 		Result:        s.Result,
 		FailTests:     len(s.FailingTests),
+		Races:         s.Races,
 		SlowTests:     slowTests,
-		TimeoutTests:  len(rep.Timeouts),
+		TimeoutTests:  len(timedOutEntriesFromReport(rep)),
 		FailingTests:  append([]string(nil), s.FailingTests...),
+		RacingTests:   append([]string(nil), s.RacingTests...),
 		TimedOutTests: timedOutTestNamesFromReport(rep),
 	}
 }
 
-func timedOutTestNamesFromReport(rep *Report) []string {
-	if len(rep.Timeouts) == 0 {
+func timedOutEntriesFromReport(rep *Report) []TestEntry {
+	if rep == nil {
 		return nil
 	}
-	names := make([]string, 0, len(rep.Timeouts))
-	for _, e := range rep.Timeouts {
+	var out []TestEntry
+	for _, group := range rep.TestGroups() {
+		for _, e := range *group.Entries {
+			if len(e.TimeoutIters) == 0 {
+				continue
+			}
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func timedOutTestNamesFromReport(rep *Report) []string {
+	entries := timedOutEntriesFromReport(rep)
+	if len(entries) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
 		name := e.Test
 		if name == "" {
 			name = e.Package
@@ -810,6 +942,7 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 	})
 	aggs := make(map[testKey]*aggregate)
 	interner := newStringInterner()
+	raceCounts := make([]int, len(matches))
 	for i, p := range matches {
 		if err := func() error {
 			f, err := os.Open(p) //nolint:gosec // G304: path from filepath.Glob
@@ -817,7 +950,12 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 				return err
 			}
 			defer func() { _ = f.Close() }()
-			return scanIterationJSONL(f, i, aggs, nil, slowThreshold, interner, tmpDir)
+			var meta iterationScanMeta
+			if err := scanIterationJSONL(f, i, aggs, &meta, slowThreshold, interner, tmpDir); err != nil {
+				return err
+			}
+			raceCounts[i] = meta.dataRaceCount
+			return nil
 		}(); err != nil {
 			return nil, nil, cleanup, err
 		}
@@ -828,7 +966,7 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 			return nil, nil, cleanup, err
 		}
 	}
-	rep, logs := buildReportFromAggs(aggs, len(matches), slowThreshold)
+	rep, logs := buildReportFromAggs(aggs, len(matches), slowThreshold, raceCounts)
 	return rep, logs, cleanup, nil
 }
 
@@ -1100,6 +1238,19 @@ func PrintSummary(w io.Writer, rep *Report) {
 		printSummarySectionFlat(w, "Broken", n, fails, termstyle.Bad, termstyle.Bad, formatBrokenStats)
 	}
 
+	if rep.Run != nil && rep.Run.Race {
+		if n := len(rep.Races); n > 0 {
+			races := append([]TestEntry(nil), rep.Races...)
+			sort.Slice(races, func(i, j int) bool {
+				if races[i].Package != races[j].Package {
+					return races[i].Package < races[j].Package
+				}
+				return races[i].Test < races[j].Test
+			})
+			printSummarySectionFlat(w, "Races", n, races, termstyle.Flaky, termstyle.Flaky, formatRaceStats)
+		}
+	}
+
 	if n := len(rep.Flakes); n > 0 {
 		flakes := append([]TestEntry(nil), rep.Flakes...)
 		sort.Slice(flakes, func(i, j int) bool {
@@ -1151,7 +1302,7 @@ func printOverallStats(w io.Writer, rep *Report) {
 	if rep == nil {
 		return
 	}
-	hasFindings := len(rep.Failures) > 0 || len(rep.Flakes) > 0 || len(rep.Timeouts) > 0 ||
+	hasFindings := len(rep.Failures) > 0 || len(rep.Races) > 0 || len(rep.Flakes) > 0 || len(rep.Timeouts) > 0 ||
 		len(rep.Slow) > 0 || len(rep.SlowestPackages) > 0
 	s := rep.Summary
 	hasIterRuntime := s != nil &&
@@ -1233,6 +1384,8 @@ func formatSummaryFlatLine(e TestEntry, statsFor func(TestEntry) string) string 
 }
 
 func formatBrokenStats(TestEntry) string { return "" }
+
+func formatRaceStats(TestEntry) string { return "" }
 
 func formatTimeoutStats(TestEntry) string { return "" }
 

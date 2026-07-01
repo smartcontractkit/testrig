@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,6 +67,7 @@ type DiagnoseRunState struct {
 	iterDurations       []time.Duration
 	shuffleSeeds        map[int]int64
 	liveProgress        bool
+	tableOpts           DiagnoseTableOpts
 }
 
 // Completed returns the number of diagnose iterations finished so far.
@@ -496,6 +498,7 @@ func recordDiagnoseIterationResult(
 			result.digest,
 			result.digestErr,
 			result.duration,
+			state.tableOpts,
 		)
 	})
 	if result.dumpErr != nil && !out.AIOutput() {
@@ -542,16 +545,19 @@ func runDiagnoseIterations(
 		parallel = len(resources)
 	}
 	resources = resources[:parallel]
+	raceEnabled := goTestRaceEnabled(adjustedArgs)
+	tableOpts := DiagnoseTableOpts{RaceEnabled: raceEnabled}
 	state := &DiagnoseRunState{
 		iterDurations:       make([]time.Duration, conf.Iterations),
 		failedFastIteration: -1,
+		tableOpts:           tableOpts,
 	}
 	if conf.Shuffle {
 		state.shuffleSeeds = make(map[int]int64)
 	}
 
 	if !out.AIOutput() {
-		printDiagnoseIterationTableHeader(out)
+		printDiagnoseIterationTableHeader(out, tableOpts)
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -1246,6 +1252,7 @@ func printDiagnoseIterationDigest(
 	d IterationDigest,
 	digestErr error,
 	iterDur time.Duration,
+	tableOpts DiagnoseTableOpts,
 ) {
 	if digestErr != nil {
 		out.Stderrf("diagnose iteration %d summary: %v\n", iterationIdx0+1, digestErr)
@@ -1253,26 +1260,33 @@ func printDiagnoseIterationDigest(
 	}
 	iter := iterationIdx0 + 1
 	if out.AIOutput() {
-		out.Stdoutln(formatIterationDigestAI(iter, totalIters, d, iterDur))
+		out.Stdoutln(formatIterationDigestAI(iter, totalIters, d, iterDur, tableOpts))
 		return
 	}
-	printIterationDigestHuman(out, iter, d, iterDur)
+	printIterationDigestHuman(out, iter, d, iterDur, tableOpts)
 }
 
 // formatIterationDigestAI prints one line for --ai-output diagnose progress.
-// Tokens: d iter/total; p|f|t result; wall seconds; r named tests executed (excludes skip-only);
-// k skipped; f failing-test entries; t timeouts; s slow tests.
-func formatIterationDigestAI(iter, total int, d IterationDigest, dur time.Duration) string {
-	rs := "?"
-	switch d.Result {
-	case "pass":
-		rs = "p"
-	case "fail":
-		rs = "f"
-	case "timeout":
-		rs = "t"
-	}
+// Tokens: d iter/total; p|f|t|r|fr|tr result; wall seconds; r named tests executed (excludes skip-only);
+// k skipped; f failing-test entries; x races (when -race); t timeouts; s slow tests.
+func formatIterationDigestAI(iter, total int, d IterationDigest, dur time.Duration, opts DiagnoseTableOpts) string {
+	rs := iterationDigestAIResultToken(d.Result)
 	sec := max(int(dur.Round(time.Second)/time.Second), 0)
+	if opts.RaceEnabled {
+		return fmt.Sprintf(
+			"d %d/%d %s %ds r%d k%d f%d x%d t%d s%d",
+			iter,
+			total,
+			rs,
+			sec,
+			d.RanTests,
+			d.SkipTests,
+			d.FailTests,
+			d.Races,
+			d.TimeoutTests,
+			d.SlowTests,
+		)
+	}
 	return fmt.Sprintf(
 		"d %d/%d %s %ds r%d k%d f%d t%d s%d",
 		iter,
@@ -1287,13 +1301,41 @@ func formatIterationDigestAI(iter, total int, d IterationDigest, dur time.Durati
 	)
 }
 
-func printIterationDigestHuman(out *output.Printer, iter int, d IterationDigest, dur time.Duration) {
-	row := formatDiagnoseIterationTableRow(iter, d, dur)
-	switch d.Result {
+func iterationDigestAIResultToken(result string) string {
+	switch result {
+	case "pass":
+		return "p"
 	case "fail":
-		row += formatDiagnoseProblemTestsSuffix(d.FailingTests, out.TermColumns(), row, termstyle.Bad.Render)
+		return "f"
 	case "timeout":
+		return "t"
+	case "race":
+		return "r"
+	case "fail+race":
+		return "fr"
+	case "timeout+race":
+		return "tr"
+	default:
+		return "?"
+	}
+}
+
+func printIterationDigestHuman(
+	out *output.Printer,
+	iter int,
+	d IterationDigest,
+	dur time.Duration,
+	opts DiagnoseTableOpts,
+) {
+	row := formatDiagnoseIterationTableRow(iter, d, dur, opts)
+	switch d.Result {
+	case "fail", "fail+race":
+		row += formatDiagnoseProblemTestsSuffix(d.FailingTests, out.TermColumns(), row, termstyle.Bad.Render)
+	case "timeout", "timeout+race":
 		row += formatDiagnoseProblemTestsSuffix(d.TimedOutTests, out.TermColumns(), row, termstyle.Accent.Render)
+	}
+	if strings.Contains(d.Result, "race") && len(d.RacingTests) > 0 {
+		row += formatDiagnoseProblemTestsSuffix(d.RacingTests, out.TermColumns(), row, termstyle.Flaky.Render)
 	}
 	out.HumanStderr(row)
 }
@@ -1306,9 +1348,20 @@ func renderIterationResultHuman(r string) string {
 		return termstyle.Bad.Render("fail")
 	case "timeout":
 		return termstyle.Accent.Render("timeout")
+	case "race":
+		return termstyle.Flaky.Render("race")
+	case "fail+race":
+		return termstyle.Bad.Render("fail") + termstyle.Muted.Render("+") + termstyle.Flaky.Render("race")
+	case "timeout+race":
+		return termstyle.Accent.Render("timeout") + termstyle.Muted.Render("+") + termstyle.Flaky.Render("race")
 	default:
 		return termstyle.Muted.Render(r)
 	}
+}
+
+// goTestRaceEnabled reports whether -race appears in the go test flag section (before -args).
+func goTestRaceEnabled(goTestArgs []string) bool {
+	return slices.Contains(modresolve.GoTestFlagsBeforeArgs(goTestArgs), "-race")
 }
 
 // syncedWriter serializes writes to w so stdout and stderr from `go test` can
@@ -1466,5 +1519,6 @@ func newRunMeta(
 		FailFast:           conf.FailFast,
 		FailFastOn:         ffo,
 		Shuffle:            conf.Shuffle,
+		Race:               goTestRaceEnabled(args),
 	}
 }
