@@ -634,9 +634,12 @@ func buildIterationSummaries(aggs map[testKey]*aggregate, numIterations int, rac
 			continue
 		}
 		for _, i := range a.failedIters {
-			if aggregateRacedInIter(a, i) {
-				continue
+			if iterPkgHasTestFail[i] == nil {
+				iterPkgHasTestFail[i] = make(map[string]bool)
 			}
+			iterPkgHasTestFail[i][key.Package] = true
+		}
+		for _, i := range a.raceIters {
 			if iterPkgHasTestFail[i] == nil {
 				iterPkgHasTestFail[i] = make(map[string]bool)
 			}

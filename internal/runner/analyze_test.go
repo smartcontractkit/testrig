@@ -310,6 +310,21 @@ func TestDigestIterationJSONL(t *testing.T) {
 		assert.Empty(t, d.FailingTests)
 	})
 
+	t.Run("data race only with package failure", func(t *testing.T) {
+		t.Parallel()
+		jsonl := `{"Action":"output","Package":"pkg/r","Test":"TestRace","Output":"WARNING: DATA RACE\n"}
+{"Action":"fail","Package":"pkg/r","Test":"TestRace","Elapsed":0.1}
+{"Action":"fail","Package":"pkg/r","Elapsed":0.1}
+`
+		d, err := DigestIterationJSONL(strings.NewReader(jsonl), 30*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "race", d.Result)
+		assert.Equal(t, 1, d.Races)
+		assert.Equal(t, 0, d.FailTests)
+		assert.Equal(t, []string{"TestRace"}, d.RacingTests)
+		assert.Empty(t, d.FailingTests)
+	})
+
 	t.Run("fail and race", func(t *testing.T) {
 		t.Parallel()
 		jsonl := `{"Action":"fail","Package":"p","Test":"TestFail","Elapsed":0.1}
