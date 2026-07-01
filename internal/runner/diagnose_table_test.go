@@ -24,29 +24,35 @@ func stripANSI(s string) string {
 
 func TestDiagnoseTableHeaderPlain(t *testing.T) {
 	t.Parallel()
-	got := diagnoseTableHeaderPlain()
+	got := diagnoseTableHeaderPlain(DiagnoseTableOpts{})
 	want := fmt.Sprintf("%5s  %-8s  %8s  %8s  %8s  %8s  %8s  %10s",
 		"Iter", "Result", "Tests", "Skipped", "Failures", "Timeouts", "Slow", "Runtime")
 	assert.Equal(t, want, got)
 	assert.Len(t, got, len(want))
+
+	raceGot := diagnoseTableHeaderPlain(DiagnoseTableOpts{RaceEnabled: true})
+	raceWant := fmt.Sprintf("%5s  %-12s  %8s  %8s  %8s  %8s  %8s  %8s  %10s",
+		"Iter", "Result", "Tests", "Skipped", "Failures", "Races", "Timeouts", "Slow", "Runtime")
+	assert.Equal(t, raceWant, raceGot)
 }
 
 func TestPrintDiagnoseIterationTableHeader(t *testing.T) {
 	t.Parallel()
 	var stderr strings.Builder
 	p := output.NewForTest(false, &strings.Builder{}, &stderr, false)
-	printDiagnoseIterationTableHeader(p)
+	printDiagnoseIterationTableHeader(p, DiagnoseTableOpts{})
 	s := strings.TrimRight(stripANSI(stderr.String()), "\n")
 	lines := strings.Split(s, "\n")
 	require.Len(t, lines, 2)
-	assert.Equal(t, diagnoseTableHeaderPlain(), lines[0])
-	assert.Equal(t, strings.Repeat("─", len(diagnoseTableHeaderPlain())), lines[1])
+	assert.Equal(t, diagnoseTableHeaderPlain(DiagnoseTableOpts{}), lines[0])
+	assert.Equal(t, strings.Repeat("─", len(diagnoseTableHeaderPlain(DiagnoseTableOpts{}))), lines[1])
 }
 
 func TestFormatDiagnoseIterationTableRow(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name     string
+		opts     DiagnoseTableOpts
 		iter     int
 		d        IterationDigest
 		dur      time.Duration
@@ -79,21 +85,55 @@ func TestFormatDiagnoseIterationTableRow(t *testing.T) {
 			dur:      time.Hour,
 			wantSans: "    3  timeout          0         0         0         1         0      1h0m0s",
 		},
+		{
+			name: "race_enabled",
+			opts: DiagnoseTableOpts{RaceEnabled: true},
+			iter: 5,
+			d: IterationDigest{
+				Result: "fail+race", RanTests: 4, FailTests: 1, Races: 2, TimeoutTests: 0, SkipTests: 0, SlowTests: 0,
+			},
+			dur:      45 * time.Second,
+			wantSans: "    5  fail+race            4         0         1         2         0         0         45s",
+		},
+		{
+			name: "timeout_race_enabled",
+			opts: DiagnoseTableOpts{RaceEnabled: true},
+			iter: 2,
+			d: IterationDigest{
+				Result:       "timeout+race",
+				RanTests:     1,
+				FailTests:    0,
+				Races:        1,
+				TimeoutTests: 1,
+				SkipTests:    0,
+				SlowTests:    0,
+			},
+			dur:      2 * time.Minute,
+			wantSans: "    2  timeout+race         1         0         0         1         1         0        2m0s",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := stripANSI(formatDiagnoseIterationTableRow(tc.iter, tc.d, tc.dur))
+			got := stripANSI(formatDiagnoseIterationTableRow(tc.iter, tc.d, tc.dur, tc.opts))
 			assert.Equal(t, tc.wantSans, got)
 		})
 	}
+}
+
+func TestRenderIterationResultHuman_combinedRace(t *testing.T) {
+	t.Parallel()
+	assert.Contains(t, stripANSI(renderIterationResultHuman("fail+race")), "fail")
+	assert.Contains(t, stripANSI(renderIterationResultHuman("fail+race")), "race")
+	assert.Contains(t, stripANSI(renderIterationResultHuman("timeout+race")), "timeout")
+	assert.Contains(t, stripANSI(renderIterationResultHuman("timeout+race")), "race")
 }
 
 func TestFormatDiagnoseProblemTestsSuffix(t *testing.T) {
 	t.Parallel()
 	baseRowANSI := formatDiagnoseIterationTableRow(19, IterationDigest{
 		Result: "fail", RanTests: 8657, SkipTests: 103, FailTests: 4, TimeoutTests: 0, SlowTests: 14,
-	}, 3*time.Minute)
+	}, 3*time.Minute, DiagnoseTableOpts{})
 	baseRow := stripANSI(baseRowANSI)
 	cases := []struct {
 		name      string
@@ -163,10 +203,14 @@ func TestPrintIterationDigestHuman_withFailingTests(t *testing.T) {
 		FailTests:    2,
 		FailingTests: []string{"Testxxx", "Testyyy"},
 	}
-	printIterationDigestHuman(out, 19, d, 3*time.Minute)
+	printIterationDigestHuman(out, 19, d, 3*time.Minute, DiagnoseTableOpts{})
 
 	got := stderr.String()
 	require.Contains(t, got, termstyle.Bad.Render("Testxxx"))
 	require.Contains(t, got, termstyle.Bad.Render("Testyyy"))
-	require.Contains(t, stripANSI(got), stripANSI(formatDiagnoseIterationTableRow(19, d, 3*time.Minute)))
+	require.Contains(
+		t,
+		stripANSI(got),
+		stripANSI(formatDiagnoseIterationTableRow(19, d, 3*time.Minute, DiagnoseTableOpts{})),
+	)
 }

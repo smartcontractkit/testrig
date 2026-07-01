@@ -28,6 +28,7 @@ type aiDiagnoseComplete struct {
 
 type aiFindings struct {
 	Broken   []aiFinding `json:"broken,omitempty"`
+	Races    []aiFinding `json:"races,omitempty"`
 	Flaky    []aiFinding `json:"flaky,omitempty"`
 	Timeouts []aiFinding `json:"timeouts,omitempty"`
 	Slow     []aiFinding `json:"slow,omitempty"`
@@ -61,6 +62,7 @@ func aiFindingsFromReport(rep *Report) aiFindings {
 	}
 	return aiFindings{
 		Broken:   aiFindingsFromEntries(rep.Failures, aiFindingFromEntry),
+		Races:    aiFindingsFromEntries(rep.Races, aiFindingFromEntry),
 		Flaky:    aiFindingsFromEntries(rep.Flakes, aiFindingFromEntry),
 		Timeouts: aiFindingsFromEntries(rep.Timeouts, aiFindingFromEntry),
 		Slow:     aiFindingsFromEntries(rep.Slow, aiFindingFromSlowEntry),

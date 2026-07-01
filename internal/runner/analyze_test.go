@@ -295,6 +295,62 @@ func TestDigestIterationJSONL(t *testing.T) {
 		assert.Equal(t, 1, d.SkipTests)
 		assert.Equal(t, "pass", d.Result)
 	})
+
+	t.Run("data race only", func(t *testing.T) {
+		t.Parallel()
+		jsonl := `{"Action":"output","Package":"pkg/r","Test":"TestRace","Output":"WARNING: DATA RACE\n"}
+{"Action":"fail","Package":"pkg/r","Test":"TestRace","Elapsed":0.1}
+`
+		d, err := DigestIterationJSONL(strings.NewReader(jsonl), 30*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "race", d.Result)
+		assert.Equal(t, 1, d.Races)
+		assert.Equal(t, 0, d.FailTests)
+		assert.Equal(t, []string{"TestRace"}, d.RacingTests)
+		assert.Empty(t, d.FailingTests)
+	})
+
+	t.Run("fail and race", func(t *testing.T) {
+		t.Parallel()
+		jsonl := `{"Action":"fail","Package":"p","Test":"TestFail","Elapsed":0.1}
+{"Action":"output","Package":"p","Test":"TestRace","Output":"WARNING: DATA RACE\n"}
+{"Action":"fail","Package":"p","Test":"TestRace","Elapsed":0.1}
+`
+		d, err := DigestIterationJSONL(strings.NewReader(jsonl), 30*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "fail+race", d.Result)
+		assert.Equal(t, 1, d.Races)
+		assert.Equal(t, 1, d.FailTests)
+		assert.Equal(t, []string{"TestFail"}, d.FailingTests)
+		assert.Equal(t, []string{"TestRace"}, d.RacingTests)
+	})
+
+	t.Run("timeout and race", func(t *testing.T) {
+		t.Parallel()
+		jsonl := `{"Action":"output","Package":"p","Test":"TestHang","Output":"panic: test timed out after 2m0s\n"}
+{"Action":"output","Package":"p","Test":"TestHang","Output":"WARNING: DATA RACE\n"}
+{"Action":"fail","Package":"p","Test":"TestHang","Elapsed":120.0}
+`
+		d, err := DigestIterationJSONL(strings.NewReader(jsonl), 30*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "timeout+race", d.Result)
+		assert.Equal(t, 1, d.Races)
+		assert.Equal(t, 0, d.FailTests)
+	})
+}
+
+func TestAnalyzeDataRaceSeparation(t *testing.T) {
+	t.Parallel()
+	rep, _ := analyze(t, readers(
+		`{"Action":"output","Package":"pkg/r","Test":"TestRace","Output":"WARNING: DATA RACE\n"}
+{"Action":"fail","Package":"pkg/r","Test":"TestRace","Elapsed":0.1}`,
+	), 30*time.Second)
+	require.Len(t, rep.Races, 1)
+	assert.Equal(t, "TestRace", rep.Races[0].Test)
+	assert.Empty(t, rep.Failures)
+	require.Len(t, rep.IterationSummaries, 1)
+	assert.Equal(t, "race", rep.IterationSummaries[0].Result)
+	assert.Equal(t, 1, rep.IterationSummaries[0].Races)
 }
 
 func TestAnalyze(t *testing.T) {

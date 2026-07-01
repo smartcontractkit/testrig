@@ -13,31 +13,46 @@ import (
 	"github.com/smartcontractkit/testrig/internal/termstyle"
 )
 
+// DiagnoseTableOpts configures the streaming diagnose iteration table.
+type DiagnoseTableOpts struct {
+	RaceEnabled bool
+}
+
 // Fixed column widths for streaming rows (each row is formatted independently).
 const (
-	diagnoseColIter    = 5
-	diagnoseColResult  = 8
-	diagnoseColTests   = 8
-	diagnoseColCount   = 8
-	diagnoseColRuntime = 10
+	diagnoseColIter       = 5
+	diagnoseColResult     = 8
+	diagnoseColResultRace = 12
+	diagnoseColTests      = 8
+	diagnoseColCount      = 8
+	diagnoseColRuntime    = 10
 )
 
-func printDiagnoseIterationTableHeader(out *output.Printer) {
+func printDiagnoseIterationTableHeader(out *output.Printer, opts DiagnoseTableOpts) {
 	if out.AIOutput() {
 		return
 	}
-	out.HumanStderr(termstyle.Muted.Render(diagnoseTableHeaderPlain()))
-	out.HumanStderr(termstyle.Muted.Render(strings.Repeat("─", len(diagnoseTableHeaderPlain()))))
+	header := diagnoseTableHeaderPlain(opts)
+	out.HumanStderr(termstyle.Muted.Render(header))
+	out.HumanStderr(termstyle.Muted.Render(strings.Repeat("─", len(header))))
 }
 
-func diagnoseTableHeaderPlain() string {
+func diagnoseTableHeaderPlain(opts DiagnoseTableOpts) string {
+	if opts.RaceEnabled {
+		return fmt.Sprintf("%5s  %-12s  %8s  %8s  %8s  %8s  %8s  %8s  %10s",
+			"Iter", "Result", "Tests", "Skipped", "Failures", "Races", "Timeouts", "Slow", "Runtime")
+	}
 	return fmt.Sprintf("%5s  %-8s  %8s  %8s  %8s  %8s  %8s  %10s",
 		"Iter", "Result", "Tests", "Skipped", "Failures", "Timeouts", "Slow", "Runtime")
 }
 
-func formatDiagnoseIterationTableRow(iter int, d IterationDigest, dur time.Duration) string {
+func formatDiagnoseIterationTableRow(iter int, d IterationDigest, dur time.Duration, opts DiagnoseTableOpts) string {
+	resultWidth := diagnoseColResult
+	if opts.RaceEnabled {
+		resultWidth = diagnoseColResultRace
+	}
 	iterCol := lipgloss.PlaceHorizontal(diagnoseColIter, lipgloss.Right, termstyle.Label.Render(strconv.Itoa(iter)))
-	resCol := lipgloss.PlaceHorizontal(diagnoseColResult, lipgloss.Left, renderIterationResultHuman(d.Result))
+	resCol := lipgloss.PlaceHorizontal(resultWidth, lipgloss.Left, renderIterationResultHuman(d.Result))
 	testsCol := lipgloss.PlaceHorizontal(
 		diagnoseColTests,
 		lipgloss.Right,
@@ -45,6 +60,12 @@ func formatDiagnoseIterationTableRow(iter int, d IterationDigest, dur time.Durat
 	)
 	skipCol := lipgloss.PlaceHorizontal(diagnoseColCount, lipgloss.Right, diagnoseTableCountStyled(d.SkipTests, "skip"))
 	failCol := lipgloss.PlaceHorizontal(diagnoseColCount, lipgloss.Right, diagnoseTableCountStyled(d.FailTests, "fail"))
+	gap := "  "
+	parts := []string{iterCol, gap, resCol, gap, testsCol, gap, skipCol, gap, failCol}
+	if opts.RaceEnabled {
+		raceCol := lipgloss.PlaceHorizontal(diagnoseColCount, lipgloss.Right, diagnoseTableCountStyled(d.Races, "race"))
+		parts = append(parts, gap, raceCol)
+	}
 	toCol := lipgloss.PlaceHorizontal(
 		diagnoseColCount,
 		lipgloss.Right,
@@ -53,15 +74,14 @@ func formatDiagnoseIterationTableRow(iter int, d IterationDigest, dur time.Durat
 	slowCol := lipgloss.PlaceHorizontal(diagnoseColCount, lipgloss.Right, diagnoseTableCountStyled(d.SlowTests, "slow"))
 	rt := termstyle.Muted.Render(dur.Round(time.Second).String())
 	rtCol := lipgloss.PlaceHorizontal(diagnoseColRuntime, lipgloss.Right, rt)
-	gap := "  "
-	return lipgloss.JoinHorizontal(lipgloss.Top,
-		iterCol, gap, resCol, gap, testsCol, gap, skipCol, gap, failCol, gap, toCol, gap, slowCol, gap, rtCol)
+	parts = append(parts, gap, toCol, gap, slowCol, gap, rtCol)
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 }
 
 func diagnoseTableCountStyled(n int, kind string) string {
 	s := strconv.Itoa(n)
 	switch kind {
-	case "fail", "timeout":
+	case "fail", "timeout", "race":
 		if n == 0 {
 			return termstyle.OK.Render(s)
 		}

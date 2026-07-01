@@ -1154,7 +1154,30 @@ func TestFormatIterationDigestAI(t *testing.T) {
 	d := IterationDigest{
 		Result: "pass", RanTests: 126, FailTests: 0, TimeoutTests: 0, SkipTests: 2, SlowTests: 6,
 	}
-	assert.Equal(t, "d 7/100 p 90s r126 k2 f0 t0 s6", formatIterationDigestAI(7, 100, d, 90*time.Second))
+	assert.Equal(
+		t,
+		"d 7/100 p 90s r126 k2 f0 t0 s6",
+		formatIterationDigestAI(7, 100, d, 90*time.Second, DiagnoseTableOpts{}),
+	)
+}
+
+func TestGoTestRaceEnabled(t *testing.T) {
+	t.Parallel()
+	assert.True(t, goTestRaceEnabled([]string{"-race", "./pkg"}))
+	assert.False(t, goTestRaceEnabled([]string{"./pkg"}))
+	assert.False(t, goTestRaceEnabled([]string{"-args", "-race", "./pkg"}))
+}
+
+func TestFormatIterationDigestAI_raceEnabled(t *testing.T) {
+	t.Parallel()
+	d := IterationDigest{
+		Result: "fail+race", RanTests: 10, FailTests: 1, Races: 2, TimeoutTests: 0, SkipTests: 0, SlowTests: 0,
+	}
+	assert.Equal(
+		t,
+		"d 3/5 fr 12s r10 k0 f1 x2 t0 s0",
+		formatIterationDigestAI(3, 5, d, 12*time.Second, DiagnoseTableOpts{RaceEnabled: true}),
+	)
 }
 
 func TestShouldFailFastIterationOptimization(t *testing.T) {
