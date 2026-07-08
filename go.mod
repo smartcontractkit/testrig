@@ -10,7 +10,7 @@ replace github.com/smartcontractkit/testrig/tools/test => ./tools/test
 
 require (
 	charm.land/fang/v2 v2.0.1
-	charm.land/lipgloss/v2 v2.0.4
+	charm.land/lipgloss/v2 v2.0.5
 	github.com/buger/jsonparser v1.2.0
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/term v0.2.2
