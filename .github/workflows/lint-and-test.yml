@@ -59,7 +59,9 @@ jobs:
 
       - name: Test
         id: run-tests
-        run: go tool gotestsum --format github-actions -- ./...
+        uses: gotesttools/gotestsum-action@v1
+        with:
+          packages: ./...
 
   test-race:
     name: Test (race)
@@ -79,4 +81,7 @@ jobs:
         run: go mod download
 
       - name: Test
-        run: go tool gotestsum --format github-actions -- -race ./...
+        uses: gotesttools/gotestsum-action@v1
+        with:
+          race: true
+          packages: ./...

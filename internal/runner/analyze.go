@@ -145,6 +145,7 @@ type IterationSummary struct {
 // Use this for full argv and flags; the directory name only carries a short target slug and timestamp.
 type RunMeta struct {
 	ResultsDirBasename string        `json:"results_dir_basename"`
+	Name               string        `json:"name,omitempty"`
 	StartedAt          time.Time     `json:"started_at"`
 	FinishedAt         *time.Time    `json:"finished_at,omitempty"`
 	GoTestArgs         []string      `json:"go_test_args"`
@@ -979,6 +980,19 @@ func WriteReport(resultsDir string, rep *Report) error {
 	return os.WriteFile(filepath.Join(resultsDir, "report.json"), b, 0600)
 }
 
+// ReadReport reads <resultsDir>/report.json.
+func ReadReport(resultsDir string) (*Report, error) {
+	b, err := os.ReadFile(filepath.Join(resultsDir, "report.json")) //nolint:gosec // G304: path from filepath.Join
+	if err != nil {
+		return nil, err
+	}
+	var rep Report
+	if err := json.Unmarshal(b, &rep); err != nil {
+		return nil, err
+	}
+	return &rep, nil
+}
+
 // WriteLogFiles moves per-test per-iteration temporary log files into <resultsDir>/logs/
 // for flagged tests and populates each flagged TestEntry's Logs slice with a
 // compact problem-kind, iteration-range, and path pattern.
@@ -1352,6 +1366,12 @@ func countBrokenNamedTests(rep *Report) int {
 		}
 	}
 	return n
+}
+
+// BrokenNamedCount returns how many named tests failed, using the same
+// definition as the diagnose summary table.
+func (rep *Report) BrokenNamedCount() int {
+	return countBrokenNamedTests(rep)
 }
 
 func printSummarySectionFlat(
