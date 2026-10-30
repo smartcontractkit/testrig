@@ -12,10 +12,11 @@ import (
 )
 
 type row struct {
-	label  string
-	before string
-	after  string
-	change string
+	label    string
+	before   string
+	after    string
+	change   string
+	evidence string
 }
 
 type testKey struct {
@@ -80,19 +81,35 @@ type timingRow struct {
 	beforeMax string
 	afterMax  string
 	maxChange string
+	sortDelta time.Duration // p50 after − before; used to order package speed rows
+}
+
+type packageProblemRow struct {
+	pkg         string
+	beforeTests int
+	afterTests  int
+	beforeFails int
+	afterFails  int
+	change      string
 }
 
 type comparison struct {
-	beforeLabel  string
-	afterLabel   string
-	beforePath   string
-	afterPath    string
-	warnings     []string
-	runs         []row
-	summary      []row
-	testSections []testSection
-	slowRows     []timingRow
-	packageRows  []timingRow
+	beforeLabel          string
+	afterLabel           string
+	beforePath           string
+	afterPath            string
+	warnings             []string
+	runs                 []row
+	summary              []row
+	testSections         []testSection
+	racesCompared        bool
+	raceRows             []packageProblemRow
+	raceUnchangedRows    []packageProblemRow
+	flakeRows            []packageProblemRow
+	flakeUnchangedRows   []packageProblemRow
+	packageSpeedRows     []timingRow
+	packageSpeedSameRows []timingRow
+	slowRows             []timingRow
 }
 
 func diff(before, after Run) comparison {
@@ -106,19 +123,50 @@ func diff(before, after Run) comparison {
 	doc.runs = diffRunRows(before.Report, after.Report)
 	doc.summary = diffSummaryRows(before.Report, after.Report)
 	doc.testSections = diffProblemTests(before.Report, after.Report)
-	doc.slowRows = diffTimings(before.Report, after.Report, func(rep *runner.Report) []runner.TestEntry {
-		if rep == nil {
-			return nil
-		}
-		return rep.Slow
-	})
-	doc.packageRows = diffTimings(before.Report, after.Report, func(rep *runner.Report) []runner.TestEntry {
-		if rep == nil {
-			return nil
-		}
-		return rep.SlowestPackages
-	})
+	// Race counts only make sense when both runs enabled -race. Comparing a race
+	// run to a non-race run would always show races "fixed".
+	doc.racesCompared = runMetaOf(before.Report).Race && runMetaOf(after.Report).Race
+	if doc.racesCompared {
+		doc.raceRows, doc.raceUnchangedRows = diffPackageProblems(
+			raceEntries(before.Report),
+			raceEntries(after.Report),
+		)
+	}
+	doc.flakeRows, doc.flakeUnchangedRows = diffPackageProblems(
+		flakeEntries(before.Report),
+		flakeEntries(after.Report),
+	)
+	doc.packageSpeedRows, doc.packageSpeedSameRows = diffPackageSpeed(before.Report, after.Report)
+	doc.slowRows = diffTimings(before.Report, after.Report, slowEntries)
 	return doc
+}
+
+func raceEntries(rep *runner.Report) []runner.TestEntry {
+	if rep == nil {
+		return nil
+	}
+	return rep.Races
+}
+
+func flakeEntries(rep *runner.Report) []runner.TestEntry {
+	if rep == nil {
+		return nil
+	}
+	return rep.Flakes
+}
+
+func slowEntries(rep *runner.Report) []runner.TestEntry {
+	if rep == nil {
+		return nil
+	}
+	return rep.Slow
+}
+
+func slowestPackages(rep *runner.Report) []runner.TestEntry {
+	if rep == nil {
+		return nil
+	}
+	return rep.SlowestPackages
 }
 
 func runLabel(r Run, fallback string) string {
@@ -222,8 +270,7 @@ type repStats struct {
 	slow           int
 	flakeFailIters int
 	flakeIters     int
-	passIters      int
-	completed      int
+	durations      []time.Duration
 	p50            time.Duration
 	max            time.Duration
 	race           bool
@@ -249,13 +296,9 @@ func statsOf(rep *runner.Report) repStats {
 		stats.max = rep.Summary.IterationDurationMax
 	}
 	for _, it := range rep.IterationSummaries {
-		if it.Result == "pass" {
-			stats.passIters++
+		if it.Duration > 0 {
+			stats.durations = append(stats.durations, it.Duration)
 		}
-	}
-	stats.completed = len(rep.IterationSummaries)
-	if stats.completed == 0 {
-		stats.completed = rep.Iterations
 	}
 	if stats.flakeIters == 0 {
 		stats.flakeIters = rep.Iterations
@@ -269,44 +312,109 @@ func statsOf(rep *runner.Report) repStats {
 func diffSummaryRows(before, after *runner.Report) []row {
 	b, a := statsOf(before), statsOf(after)
 	rows := []row{
-		compareCount("Tests run", b.testsRun, a.testsRun, b.iterations, a.iterations, true),
-		compareCount("Broken tests", b.broken, a.broken, b.iterations, a.iterations, false),
-		compareCount("Flaky tests", b.flaky, a.flaky, b.iterations, a.iterations, false),
+		plainCount("Tests run", b.testsRun, a.testsRun),
+		withEvidence(
+			compareProblemCount("Broken tests", b.broken, a.broken, b.iterations, a.iterations),
+			proportionEvidence(b.broken, b.testsRun, a.broken, a.testsRun),
+		),
+		withEvidence(
+			compareProblemCount("Flaky tests", b.flaky, a.flaky, b.iterations, a.iterations),
+			proportionEvidence(b.flaky, b.testsRun, a.flaky, a.testsRun),
+		),
 	}
 	if b.race || a.race {
-		rows = append(rows, compareCount("Races", b.races, a.races, b.iterations, a.iterations, false))
+		races := compareProblemCount("Races", b.races, a.races, b.iterations, a.iterations)
+		if b.race && a.race {
+			races.evidence = proportionEvidence(b.races, b.testsRun, a.races, a.testsRun)
+		}
+		rows = append(rows, races)
 	}
 	rows = append(rows,
-		compareCount("Timeouts", b.timeouts, a.timeouts, b.iterations, a.iterations, false),
-		compareCount("Slow tests", b.slow, a.slow, b.iterations, a.iterations, false),
-		compareFraction("Flaky iterations", b.flakeFailIters, b.flakeIters, a.flakeFailIters, a.flakeIters, false),
-		compareFraction("Passing iterations", b.passIters, b.completed, a.passIters, a.completed, true),
-		compareDuration("Iteration wall time p50", b.p50, a.p50),
+		withEvidence(
+			compareProblemCount("Timeouts", b.timeouts, a.timeouts, b.iterations, a.iterations),
+			proportionEvidence(b.timeouts, b.testsRun, a.timeouts, a.testsRun),
+		),
+		withEvidence(
+			compareProblemCount("Slow tests", b.slow, a.slow, b.iterations, a.iterations),
+			proportionEvidence(b.slow, b.testsRun, a.slow, a.testsRun),
+		),
+		withEvidence(
+			compareFraction("Flaky iterations", b.flakeFailIters, b.flakeIters, a.flakeFailIters, a.flakeIters, true),
+			proportionEvidence(b.flakeFailIters, b.flakeIters, a.flakeFailIters, a.flakeIters),
+		),
+		withEvidence(
+			compareDuration("Iteration wall time p50", b.p50, a.p50),
+			durationEvidence(b.durations, a.durations),
+		),
 		compareDuration("Iteration wall time max", b.max, a.max),
 	)
 	return rows
 }
 
-// compareCount renders a count row. When iteration counts differ, counts are
-// shown with a per-iteration rate and compared as rates.
-func compareCount(label string, before, after, beforeIters, afterIters int, neutral bool) row {
+func withEvidence(r row, evidence string) row {
+	// No change means statistical evidence is moot; a dash reads better than
+	// "unclear" next to "0".
+	if r.change == "" || r.change == "0" {
+		r.evidence = "—"
+		return r
+	}
+	r.evidence = evidence
+	return r
+}
+
+func proportionEvidence(beforeN, beforeD, afterN, afterD int) string {
+	if beforeD <= 0 || afterD <= 0 ||
+		beforeN < 0 || afterN < 0 || beforeN > beforeD || afterN > afterD {
+		return "—"
+	}
+	return formatEvidence(fisherExact(beforeN, beforeD-beforeN, afterN, afterD-afterN))
+}
+
+func durationEvidence(before, after []time.Duration) string {
+	p, ok := mannWhitneyP(before, after)
+	if !ok {
+		return "—"
+	}
+	return formatEvidence(p)
+}
+
+// compareProblemCount renders a count where fewer is better. When iteration
+// counts differ, counts are shown per iteration and compared as rates.
+func compareProblemCount(label string, before, after, beforeIters, afterIters int) row {
 	if beforeIters > 0 && afterIters > 0 && beforeIters != afterIters {
-		beforeRate := percent(before, beforeIters)
-		afterRate := percent(after, afterIters)
+		beforeRate := float64(before) / float64(beforeIters)
+		afterRate := float64(after) / float64(afterIters)
 		return row{
 			label:  label,
-			before: fmt.Sprintf("%d (%.1f%%)", before, beforeRate),
-			after:  fmt.Sprintf("%d (%.1f%%)", after, afterRate),
-			change: ppChange(beforeRate, afterRate, neutral, false),
+			before: fmt.Sprintf("%d (%.1f/iter)", before, beforeRate),
+			after:  fmt.Sprintf("%d (%.1f/iter)", after, afterRate),
+			change: perIterChange(beforeRate, afterRate),
 		}
 	}
-	delta := after - before
 	return row{
 		label:  label,
 		before: strconv.Itoa(before),
 		after:  strconv.Itoa(after),
-		change: countChange(delta, neutral, false),
+		change: countChange(after - before),
 	}
+}
+
+// plainCount renders a count with no better/worse direction.
+func plainCount(label string, before, after int) row {
+	return row{
+		label:  label,
+		before: strconv.Itoa(before),
+		after:  strconv.Itoa(after),
+		change: strconv.Itoa(after - before),
+	}
+}
+
+func perIterChange(before, after float64) string {
+	delta := after - before
+	if delta == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%+.1f/iter", delta) + changeIcon(delta, false, true)
 }
 
 func compareFraction(label string, beforeN, beforeD, afterN, afterD int, lowerBetter bool) row {
@@ -340,11 +448,11 @@ func fraction(n, d int) string {
 	return fmt.Sprintf("%d/%d (%.1f%%)", n, d, percent(n, d))
 }
 
-func countChange(delta int, neutral, lowerBetter bool) string {
+func countChange(delta int) string {
 	if delta == 0 {
 		return "0"
 	}
-	return fmt.Sprintf("%+d", delta) + changeIcon(float64(delta), neutral, lowerBetter)
+	return fmt.Sprintf("%+d", delta) + changeIcon(float64(delta), false, true)
 }
 
 func ppChange(before, after float64, neutral, lowerBetter bool) string {
@@ -367,6 +475,11 @@ func changeIcon(delta float64, neutral, lowerBetter bool) string {
 		return " ✅"
 	}
 	return " ❌"
+}
+
+func stripChangeIcon(s string) string {
+	s = strings.TrimSuffix(s, " ✅")
+	return strings.TrimSuffix(s, " ❌")
 }
 
 func durationChange(before, after time.Duration) string {
@@ -527,23 +640,8 @@ func diffTimings(
 ) []timingRow {
 	beforeMap := entryMap(entries(before))
 	afterMap := entryMap(entries(after))
-	keys := make([]testKey, 0, len(beforeMap)+len(afterMap))
-	seen := make(map[testKey]struct{}, len(beforeMap)+len(afterMap))
-	for _, m := range []map[testKey]runner.TestEntry{beforeMap, afterMap} {
-		for k := range m {
-			if _, ok := seen[k]; ok {
-				continue
-			}
-			seen[k] = struct{}{}
-			keys = append(keys, k)
-		}
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].pkg != keys[j].pkg {
-			return keys[i].pkg < keys[j].pkg
-		}
-		return keys[i].test < keys[j].test
-	})
+	keys := unionKeys(beforeMap, afterMap)
+	sortKeys(keys)
 
 	rows := make([]timingRow, 0, len(keys))
 	for _, k := range keys {
@@ -559,6 +657,186 @@ func diffTimings(
 		rows = append(rows, r)
 	}
 	return rows
+}
+
+// Speed changes smaller than this (relative and absolute) go in the collapsed
+// "little or no change" table instead of the main one.
+const (
+	speedChangePct = 0.10
+	speedChangeMin = 10 * time.Millisecond
+)
+
+func diffPackageSpeed(before, after *runner.Report) (changed, unchanged []timingRow) {
+	beforeMap := entryMap(slowestPackages(before))
+	afterMap := entryMap(slowestPackages(after))
+	keys := unionKeys(beforeMap, afterMap)
+
+	for _, k := range keys {
+		b, bok := beforeMap[k]
+		a, aok := afterMap[k]
+		r := timingRow{name: k.pkg, pkg: k.pkg}
+		r.beforeP50, r.afterP50, r.p50Change = durationCells(b, bok, a, aok, func(e runner.TestEntry) time.Duration {
+			return e.P50Elapsed
+		})
+		r.beforeMax, r.afterMax, r.maxChange = durationCells(b, bok, a, aok, func(e runner.TestEntry) time.Duration {
+			return e.MaxElapsed
+		})
+		r.sortDelta = a.P50Elapsed - b.P50Elapsed
+		switch {
+		case !bok:
+			r.sortDelta = 1 << 62 // new slow package: show first
+		case !aok:
+			r.sortDelta = -(1 << 62) // no longer slow: show last
+		}
+		if speedChanged(b, bok, a, aok) {
+			changed = append(changed, r)
+		} else {
+			// These rows are collapsed; a ✅/❌ on a 1% change is just noise.
+			r.p50Change = stripChangeIcon(r.p50Change)
+			r.maxChange = stripChangeIcon(r.maxChange)
+			unchanged = append(unchanged, r)
+		}
+	}
+
+	sort.SliceStable(changed, func(i, j int) bool {
+		if changed[i].sortDelta != changed[j].sortDelta {
+			return changed[i].sortDelta > changed[j].sortDelta
+		}
+		return changed[i].pkg < changed[j].pkg
+	})
+	sort.SliceStable(unchanged, func(i, j int) bool {
+		return unchanged[i].pkg < unchanged[j].pkg
+	})
+	return changed, unchanged
+}
+
+func speedChanged(before runner.TestEntry, beforeOK bool, after runner.TestEntry, afterOK bool) bool {
+	if beforeOK != afterOK {
+		return true
+	}
+	return significantSpeedChange(before.P50Elapsed, after.P50Elapsed) ||
+		significantSpeedChange(before.MaxElapsed, after.MaxElapsed)
+}
+
+func significantSpeedChange(before, after time.Duration) bool {
+	delta := after - before
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta < speedChangeMin {
+		return false
+	}
+	if before <= 0 {
+		return after > 0
+	}
+	return float64(delta)/float64(before) >= speedChangePct
+}
+
+type packageProblemStat struct {
+	tests int
+	fails int
+}
+
+// diffPackageProblems aggregates flagged tests (races or flakes) per package and
+// splits rows into meaningful changes and no-change rows.
+func diffPackageProblems(before, after []runner.TestEntry) (changed, unchanged []packageProblemRow) {
+	beforeStats := problemStatsByPackage(before)
+	afterStats := problemStatsByPackage(after)
+	pkgs := make(map[string]struct{}, len(beforeStats)+len(afterStats))
+	for pkg := range beforeStats {
+		pkgs[pkg] = struct{}{}
+	}
+	for pkg := range afterStats {
+		pkgs[pkg] = struct{}{}
+	}
+
+	rows := make([]packageProblemRow, 0, len(pkgs))
+	for pkg := range pkgs {
+		b, a := beforeStats[pkg], afterStats[pkg]
+		rows = append(rows, packageProblemRow{
+			pkg:         pkg,
+			beforeTests: b.tests,
+			afterTests:  a.tests,
+			beforeFails: b.fails,
+			afterFails:  a.fails,
+			change:      problemChange(b, a),
+		})
+	}
+
+	for _, r := range rows {
+		if r.change == "" {
+			unchanged = append(unchanged, r)
+		} else {
+			changed = append(changed, r)
+		}
+	}
+	sort.SliceStable(changed, func(i, j int) bool {
+		di := changed[i].afterFails - changed[i].beforeFails
+		dj := changed[j].afterFails - changed[j].beforeFails
+		if di != dj {
+			return di > dj
+		}
+		return changed[i].pkg < changed[j].pkg
+	})
+	sort.SliceStable(unchanged, func(i, j int) bool {
+		return unchanged[i].pkg < unchanged[j].pkg
+	})
+	return changed, unchanged
+}
+
+func problemStatsByPackage(entries []runner.TestEntry) map[string]packageProblemStat {
+	out := make(map[string]packageProblemStat)
+	for _, e := range entries {
+		s := out[e.Package]
+		if e.Test != "" {
+			s.tests++
+		}
+		s.fails += e.Fails
+		out[e.Package] = s
+	}
+	return out
+}
+
+func problemChange(before, after packageProblemStat) string {
+	icon := func(delta int) string { return changeIcon(float64(delta), false, true) }
+	if delta := after.fails - before.fails; delta != 0 {
+		return fmt.Sprintf("%+d%s%s", delta, plural(" failure", " failures", delta), icon(delta))
+	}
+	if delta := after.tests - before.tests; delta != 0 {
+		return fmt.Sprintf("%+d%s%s", delta, plural(" test", " tests", delta), icon(delta))
+	}
+	return ""
+}
+
+func plural(singular, pluralForm string, n int) string {
+	if n == 1 || n == -1 {
+		return singular
+	}
+	return pluralForm
+}
+
+func unionKeys(a, b map[testKey]runner.TestEntry) []testKey {
+	keys := make([]testKey, 0, len(a)+len(b))
+	seen := make(map[testKey]struct{}, len(a)+len(b))
+	for _, m := range []map[testKey]runner.TestEntry{a, b} {
+		for k := range m {
+			if _, ok := seen[k]; ok {
+				continue
+			}
+			seen[k] = struct{}{}
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+func sortKeys(keys []testKey) {
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].pkg != keys[j].pkg {
+			return keys[i].pkg < keys[j].pkg
+		}
+		return keys[i].test < keys[j].test
+	})
 }
 
 func entryMap(entries []runner.TestEntry) map[testKey]runner.TestEntry {

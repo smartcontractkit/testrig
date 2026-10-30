@@ -76,8 +76,10 @@ func TestWriteVerdictsAndSummary(t *testing.T) {
 	assert.Contains(t, out, "| TestCategory | pkg/a | slow | failure |")
 
 	assert.Contains(t, out, "| Races |")
-	assert.Contains(t, out, "| Flaky iterations | 3/30 (10.0%)")
-	assert.Contains(t, out, "| Passing iterations | 1/2 (50.0%)")
+	assert.Contains(t, out, "| Broken tests | 4 | 4 | 0 |")
+	assert.Contains(t, out, "| Slow tests | 2 | 1 | -1 ✅ |")
+	assert.Contains(t, out, "| Flaky iterations | 3/30 (10.0%) | 1/30 (3.3%) | -6.7 pp ✅ |")
+	assert.NotContains(t, out, "Passing iterations")
 	assert.Contains(t, out, "| Iteration wall time p50 |")
 	assert.Contains(t, out, "`diagnose-before`")
 	assert.Contains(t, out, "`diagnose-after`")
@@ -87,6 +89,44 @@ func TestWriteHidesRacesWithoutRaceFlag(t *testing.T) {
 	t.Parallel()
 	out := renderComparison(t, &runner.Report{}, &runner.Report{})
 	assert.NotContains(t, out, "| Races |")
+	assert.NotContains(t, out, "### Races by package")
+}
+
+func TestWritePackageRaces(t *testing.T) {
+	t.Parallel()
+	before := &runner.Report{
+		Run: &runner.RunMeta{Race: true},
+		Races: []runner.TestEntry{
+			testEntry("pkg/a", "TestRace", 1, 10),
+			testEntry("pkg/b", "TestStableRace", 2, 10),
+		},
+	}
+	after := &runner.Report{
+		Run: &runner.RunMeta{Race: true},
+		Races: []runner.TestEntry{
+			testEntry("pkg/a", "TestRace", 3, 10),
+			testEntry("pkg/a", "TestNewRace", 1, 10),
+			testEntry("pkg/b", "TestStableRace", 2, 10),
+		},
+	}
+	out := renderComparison(t, before, after)
+
+	assert.Contains(t, out, "### Races by package")
+	assert.Contains(t, out, "| pkg/a | 1 | 2 | 1 | 4 | +3 failures ❌ |")
+	assert.Contains(t, out, "<summary>Packages with no race change (1)</summary>")
+	assert.Contains(t, out, "| pkg/b | 1 | 1 | 2 | 2 |  |")
+}
+
+func TestWriteHidesPackageRacesUnlessBothRunsUseRace(t *testing.T) {
+	t.Parallel()
+	raceRun := &runner.Report{
+		Run:   &runner.RunMeta{Race: true},
+		Races: []runner.TestEntry{testEntry("pkg/a", "TestRace", 1, 10)},
+	}
+	plainRun := &runner.Report{Run: &runner.RunMeta{Race: false}}
+
+	assert.NotContains(t, renderComparison(t, raceRun, plainRun), "### Races by package")
+	assert.NotContains(t, renderComparison(t, plainRun, raceRun), "### Races by package")
 }
 
 func TestWriteWarnsWhenRunsDiffer(t *testing.T) {
@@ -135,20 +175,129 @@ func TestWriteComparesCountsAsRatesWhenIterationsDiffer(t *testing.T) {
 	}
 	after := &runner.Report{
 		Iterations: 20,
-		Failures:   []runner.TestEntry{testEntry("pkg/a", "TestBroken", 2, 20)},
+		Failures: []runner.TestEntry{
+			testEntry("pkg/a", "TestB1", 1, 20),
+			testEntry("pkg/a", "TestB2", 1, 20),
+			testEntry("pkg/a", "TestB3", 1, 20),
+			testEntry("pkg/a", "TestB4", 1, 20),
+		},
 	}
 	out := renderComparison(t, before, after)
-	assert.Contains(t, out, "| Broken tests | 1 (10.0%) | 1 (5.0%) |")
+	assert.Contains(t, out, "| Broken tests | 1 (0.1/iter) | 4 (0.2/iter) | +0.1/iter ❌ |")
 }
 
 func TestWriteTimingDeltas(t *testing.T) {
 	t.Parallel()
 	out := renderComparison(t, verdictBeforeReport(), verdictAfterReport())
+	assert.Contains(t, out, "## Package breakdown")
+	assert.Contains(t, out, "### Flakes by package")
+	assert.Contains(t, out, "### Speed by package")
 	assert.Contains(t, out, "## Slow tests")
 	assert.Contains(t, out, "| TestSlow | pkg/a | 1s | 2s |")
 	assert.Contains(t, out, "+1s (+100%)")
-	assert.Contains(t, out, "## Slowest packages")
 	assert.Contains(t, out, "| pkg/a | 1s | 2s |")
+}
+
+func TestWritePackageFlakes(t *testing.T) {
+	t.Parallel()
+	before := &runner.Report{Flakes: []runner.TestEntry{
+		testEntry("pkg/a", "TestA", 3, 30),
+		testEntry("pkg/b", "TestB", 2, 30),
+		testEntry("pkg/c", "TestC", 1, 30),
+	}}
+	after := &runner.Report{Flakes: []runner.TestEntry{
+		testEntry("pkg/a", "TestA", 5, 30),
+		testEntry("pkg/b", "TestB", 2, 30),
+	}}
+	out := renderComparison(t, before, after)
+
+	assert.Contains(t, out, "| pkg/a | 1 | 1 | 3 | 5 | +2 failures ❌ |")
+	assert.Contains(t, out, "| pkg/c | 1 | 0 | 1 | 0 | -1 failure ✅ |")
+	assert.Contains(t, out, "<summary>Packages with no flake change (1)</summary>")
+	assert.Contains(t, out, "| pkg/b | 1 | 1 | 2 | 2 |  |")
+
+	detailsIdx := strings.Index(out, "<details>")
+	require.NotEqual(t, -1, detailsIdx)
+	flakesIdx := strings.Index(out, "### Flakes by package")
+	require.NotEqual(t, -1, flakesIdx)
+	assert.NotContains(t, out[flakesIdx:detailsIdx], "| pkg/b |")
+}
+
+func TestWritePackageSpeedCollapsesSmallChanges(t *testing.T) {
+	t.Parallel()
+	before := &runner.Report{SlowestPackages: []runner.TestEntry{
+		{Package: "pkg/a", P50Elapsed: time.Second, MaxElapsed: 2 * time.Second},
+		{Package: "pkg/b", P50Elapsed: time.Second, MaxElapsed: 2 * time.Second},
+	}}
+	after := &runner.Report{SlowestPackages: []runner.TestEntry{
+		{Package: "pkg/a", P50Elapsed: 2 * time.Second, MaxElapsed: 3 * time.Second},
+		{Package: "pkg/b", P50Elapsed: 1020 * time.Millisecond, MaxElapsed: 2010 * time.Millisecond},
+	}}
+	out := renderComparison(t, before, after)
+
+	detailsIdx := strings.Index(out, "<details>")
+	require.NotEqual(t, -1, detailsIdx)
+	speedIdx := strings.Index(out, "### Speed by package")
+	require.NotEqual(t, -1, speedIdx)
+	main := out[speedIdx:detailsIdx]
+	assert.Contains(t, main, "| pkg/a | 1s | 2s |")
+	assert.NotContains(t, main, "| pkg/b |")
+	assert.Contains(t, out, "<summary>Packages with little or no speed change (1)</summary>")
+	assert.Contains(
+		t,
+		out[detailsIdx:],
+		"| pkg/b | 1s | 1.02s | +20ms (+2%) | 2s | 2.01s | +10ms (+0%) |",
+	)
+}
+
+func TestWriteSummaryEvidence(t *testing.T) {
+	t.Parallel()
+	before := &runner.Report{
+		Iterations: 10,
+		Summary: &runner.ReportSummary{
+			DistinctNamedTests:     100,
+			FlakeNamedCount:        10,
+			FlakeFailingIterations: 5,
+			FlakeIterationTotal:    10,
+			IterationDurationP50:   3 * time.Second,
+			IterationDurationMax:   5 * time.Second,
+		},
+		IterationSummaries: []runner.IterationSummary{
+			{Duration: time.Second},
+			{Duration: 2 * time.Second},
+			{Duration: 3 * time.Second},
+			{Duration: 4 * time.Second},
+			{Duration: 5 * time.Second},
+		},
+	}
+	after := &runner.Report{
+		Iterations: 10,
+		Summary: &runner.ReportSummary{
+			DistinctNamedTests:     100,
+			FlakeNamedCount:        1,
+			FlakeFailingIterations: 1,
+			FlakeIterationTotal:    10,
+			IterationDurationP50:   4 * time.Second,
+			IterationDurationMax:   6 * time.Second,
+		},
+		IterationSummaries: []runner.IterationSummary{
+			{Duration: 2 * time.Second},
+			{Duration: 3 * time.Second},
+			{Duration: 4 * time.Second},
+			{Duration: 5 * time.Second},
+			{Duration: 6 * time.Second},
+		},
+	}
+	out := renderComparison(t, before, after)
+
+	assert.Contains(t, out, "| Metric | before-race | after-race | Change | Evidence |")
+	assert.Contains(t, out, "| Tests run | 100 | 100 | 0 | — |")
+	assert.Contains(t, out, "| Broken tests | 0 | 0 | 0 | — |")
+	assert.Regexp(t, `\| Flaky tests \| 10 \| 1 \| -9 ✅ \| clear \|`, out)
+	assert.Regexp(t, `\| Flaky iterations \| 5/10 \(50\.0%\) \| 1/10 \(10\.0%\) \| -40\.0 pp ✅ \| unclear \|`, out)
+	assert.Regexp(t, `\| Iteration wall time p50 \| 3s \| 4s \| \+1s \(\+33%\) ❌ \| unclear \|`, out)
+	assert.NotContains(t, out, "Fisher")
+	assert.NotContains(t, out, "p:")
 }
 
 func renderComparison(t *testing.T, before, after *runner.Report) string {

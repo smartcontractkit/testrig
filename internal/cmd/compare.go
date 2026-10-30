@@ -78,7 +78,11 @@ func writeCompareMarkdown(cmd *cobra.Command, outputPath string, before, after c
 	}
 	if outputPath != "" {
 		//nolint:gosec // G306: report may be shared; user chooses the path, 0600 matches other artifacts
-		return os.WriteFile(outputPath, buf.Bytes(), 0600)
+		if err := os.WriteFile(outputPath, buf.Bytes(), 0600); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s\n", outputPath)
+		return err
 	}
 	_, err := cmd.OutOrStdout().Write(buf.Bytes())
 	return err

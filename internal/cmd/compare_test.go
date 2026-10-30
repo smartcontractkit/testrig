@@ -63,14 +63,15 @@ func TestCompareCommandWritesOutputFile(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "compare.md")
 
 	rootCmd := NewRootCommand(hooks.RunOptions{})
-	var buf bytes.Buffer
-	rootCmd.SetOut(&buf)
-	rootCmd.SetErr(&buf)
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
 	rootCmd.SetArgs([]string{"compare", beforeDir, afterDir, "-o", outputPath})
 
 	err := rootCmd.ExecuteContext(context.Background())
 	require.NoError(t, err)
-	assert.Empty(t, buf.String())
+	assert.Empty(t, stdout.String())
+	assert.Equal(t, "wrote "+outputPath+"\n", stderr.String())
 
 	b, err := os.ReadFile(outputPath) //nolint:gosec // G304: test-owned path
 	require.NoError(t, err)

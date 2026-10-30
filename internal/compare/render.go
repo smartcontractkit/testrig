@@ -2,6 +2,7 @@ package compare
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -14,8 +15,8 @@ func render(doc comparison) string {
 	renderRuns(&b, doc)
 	renderSummary(&b, doc)
 	renderProblemTests(&b, doc)
-	renderTimings(&b, "Slow tests", false, doc.slowRows)
-	renderTimings(&b, "Slowest packages", true, doc.packageRows)
+	renderPackageBreakdown(&b, doc)
+	renderTimings(&b, "Slow tests", doc.slowRows)
 	renderFooter(&b, doc)
 	return b.String()
 }
@@ -33,9 +34,13 @@ func renderSummary(b *strings.Builder, doc comparison) {
 	b.WriteString("## Summary\n\n")
 	rows := make([][]string, 0, len(doc.summary))
 	for _, r := range doc.summary {
-		rows = append(rows, []string{r.label, r.before, r.after, r.change})
+		evidence := r.evidence
+		if evidence == "" {
+			evidence = "—"
+		}
+		rows = append(rows, []string{r.label, r.before, r.after, r.change, evidence})
 	}
-	writeTable(b, []string{"Metric", doc.beforeLabel, doc.afterLabel, "Change"}, rows)
+	writeTable(b, []string{"Metric", doc.beforeLabel, doc.afterLabel, "Change", "Evidence"}, rows)
 }
 
 func renderProblemTests(b *strings.Builder, doc comparison) {
@@ -55,25 +60,118 @@ func renderProblemTests(b *strings.Builder, doc comparison) {
 	}
 }
 
-func renderTimings(b *strings.Builder, title string, packages bool, rows []timingRow) {
+func renderPackageBreakdown(b *strings.Builder, doc comparison) {
+	b.WriteString("## Package breakdown\n\n")
+	renderPackageRaces(b, doc)
+	renderPackageFlakes(b, doc)
+	renderPackageSpeed(b, doc)
+}
+
+func renderPackageRaces(b *strings.Builder, doc comparison) {
+	if !doc.racesCompared {
+		return
+	}
+	b.WriteString("### Races by package\n\n")
+	if len(doc.raceRows) == 0 && len(doc.raceUnchangedRows) == 0 {
+		b.WriteString("_No races detected in either run._\n\n")
+		return
+	}
+	headers := []string{
+		"Package",
+		"Racing tests before",
+		"Racing tests after",
+		"Race failures before",
+		"Race failures after",
+		"Change",
+	}
+	if len(doc.raceRows) > 0 {
+		writePackageProblemTable(b, headers, doc.raceRows)
+	}
+	if len(doc.raceUnchangedRows) > 0 {
+		writeDetails(
+			b,
+			fmt.Sprintf("Packages with no race change (%d)", len(doc.raceUnchangedRows)),
+			func() { writePackageProblemTable(b, headers, doc.raceUnchangedRows) },
+		)
+	}
+}
+
+func renderPackageFlakes(b *strings.Builder, doc comparison) {
+	b.WriteString("### Flakes by package\n\n")
+	if len(doc.flakeRows) == 0 && len(doc.flakeUnchangedRows) == 0 {
+		b.WriteString("_No flaky tests in either run._\n\n")
+		return
+	}
+	headers := []string{
+		"Package",
+		"Flaky tests before",
+		"Flaky tests after",
+		"Flake failures before",
+		"Flake failures after",
+		"Change",
+	}
+	if len(doc.flakeRows) > 0 {
+		writePackageProblemTable(b, headers, doc.flakeRows)
+	}
+	if len(doc.flakeUnchangedRows) > 0 {
+		writeDetails(
+			b,
+			fmt.Sprintf("Packages with no flake change (%d)", len(doc.flakeUnchangedRows)),
+			func() { writePackageProblemTable(b, headers, doc.flakeUnchangedRows) },
+		)
+	}
+}
+
+func writePackageProblemTable(b *strings.Builder, headers []string, rows []packageProblemRow) {
+	tableRows := make([][]string, 0, len(rows))
+	for _, r := range rows {
+		tableRows = append(tableRows, []string{
+			r.pkg,
+			strconv.Itoa(r.beforeTests),
+			strconv.Itoa(r.afterTests),
+			strconv.Itoa(r.beforeFails),
+			strconv.Itoa(r.afterFails),
+			r.change,
+		})
+	}
+	writeTable(b, headers, tableRows)
+}
+
+func renderPackageSpeed(b *strings.Builder, doc comparison) {
+	b.WriteString("### Speed by package\n\n")
+	if len(doc.packageSpeedRows) == 0 && len(doc.packageSpeedSameRows) == 0 {
+		b.WriteString("_No package exceeded the slow threshold in either run._\n\n")
+		return
+	}
+	headers := []string{"Package", "p50 before", "p50 after", "p50 Δ", "Max before", "Max after", "Max Δ"}
+	if len(doc.packageSpeedRows) > 0 {
+		writePackageSpeedTable(b, headers, doc.packageSpeedRows)
+	}
+	if len(doc.packageSpeedSameRows) > 0 {
+		writeDetails(
+			b,
+			fmt.Sprintf("Packages with little or no speed change (%d)", len(doc.packageSpeedSameRows)),
+			func() { writePackageSpeedTable(b, headers, doc.packageSpeedSameRows) },
+		)
+	}
+}
+
+func writePackageSpeedTable(b *strings.Builder, headers []string, rows []timingRow) {
+	tableRows := make([][]string, 0, len(rows))
+	for _, r := range rows {
+		tableRows = append(tableRows, []string{
+			r.pkg, r.beforeP50, r.afterP50, r.p50Change, r.beforeMax, r.afterMax, r.maxChange,
+		})
+	}
+	writeTable(b, headers, tableRows)
+}
+
+func renderTimings(b *strings.Builder, title string, rows []timingRow) {
 	if len(rows) == 0 {
 		return
 	}
 	fmt.Fprintf(b, "## %s\n\n", title)
 	tableRows := make([][]string, 0, len(rows))
-	if packages {
-		for _, r := range rows {
-			tableRows = append(tableRows, []string{
-				r.pkg, r.beforeP50, r.afterP50, r.p50Change, r.beforeMax, r.afterMax, r.maxChange,
-			})
-		}
-		writeTable(
-			b,
-			[]string{"Package", "p50 before", "p50 after", "p50 Δ", "Max before", "Max after", "Max Δ"},
-			tableRows,
-		)
-		return
-	}
 	for _, r := range rows {
 		tableRows = append(tableRows, []string{
 			r.name, r.pkg, r.beforeP50, r.afterP50, r.p50Change, r.beforeMax, r.afterMax, r.maxChange,
@@ -90,6 +188,14 @@ func renderFooter(b *strings.Builder, doc comparison) {
 	b.WriteString("---\n\n")
 	fmt.Fprintf(b, "Before: %s\n\n", mdCode(doc.beforePath))
 	fmt.Fprintf(b, "After: %s\n", mdCode(doc.afterPath))
+}
+
+// writeDetails renders a collapsible GFM section. GitHub and GitLab both
+// collapse <details> by default, keeping long "no change" tables out of the way.
+func writeDetails(b *strings.Builder, summary string, body func()) {
+	fmt.Fprintf(b, "<details>\n<summary>%s</summary>\n\n", mdCell(summary))
+	body()
+	b.WriteString("</details>\n\n")
 }
 
 func writeTable(b *strings.Builder, headers []string, rows [][]string) {
