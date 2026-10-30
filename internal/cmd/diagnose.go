@@ -39,6 +39,9 @@ run by name.`,
 			if err = config.ValidateDiagnose(conf); err != nil {
 				return err
 			}
+			if err = runner.CheckDiagnoseResultsDir(conf); err != nil {
+				return err
+			}
 
 			if err = runner.WarnDiagnoseGoTestCount(args); err != nil {
 				return err

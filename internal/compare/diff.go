@@ -36,10 +36,10 @@ const (
 	verdictWorse
 	verdictNoChange
 	verdictBetter
-	verdictFixed
+	verdictUnflagged
 )
 
-var verdictOrder = []verdict{verdictNew, verdictWorse, verdictNoChange, verdictBetter, verdictFixed}
+var verdictOrder = []verdict{verdictNew, verdictWorse, verdictNoChange, verdictBetter, verdictUnflagged}
 
 func (v verdict) label() string {
 	switch v {
@@ -51,8 +51,8 @@ func (v verdict) label() string {
 		return "No clear change"
 	case verdictBetter:
 		return "Better"
-	case verdictFixed:
-		return "Fixed"
+	case verdictUnflagged:
+		return "No longer flagged"
 	default:
 		return ""
 	}
@@ -122,10 +122,10 @@ func diff(before, after Run) comparison {
 	doc.warnings = diffWarnings(before.Report, after.Report)
 	doc.runs = diffRunRows(before.Report, after.Report)
 	doc.summary = diffSummaryRows(before.Report, after.Report)
-	doc.testSections = diffProblemTests(before.Report, after.Report)
 	// Race counts only make sense when both runs enabled -race. Comparing a race
 	// run to a non-race run would always show races "fixed".
 	doc.racesCompared = runMetaOf(before.Report).Race && runMetaOf(after.Report).Race
+	doc.testSections = diffProblemTests(before.Report, after.Report, doc.racesCompared)
 	if doc.racesCompared {
 		doc.raceRows, doc.raceUnchangedRows = diffPackageProblems(
 			raceEntries(before.Report),
@@ -202,6 +202,12 @@ func diffWarnings(before, after *runner.Report) []string {
 	if b.SlowThreshold != a.SlowThreshold {
 		reasons = append(reasons, "slow thresholds differ")
 	}
+	if b.DiagnoseIterations != a.DiagnoseIterations {
+		reasons = append(reasons, "iteration counts differ")
+	}
+	if b.Race != a.Race {
+		reasons = append(reasons, "only one run used -race")
+	}
 	if len(reasons) == 0 {
 		return nil
 	}
@@ -261,8 +267,8 @@ func durationOrDash(d time.Duration) string {
 }
 
 type repStats struct {
-	iterations     int
 	testsRun       int
+	hasSummary     bool
 	broken         int
 	flaky          int
 	races          int
@@ -281,11 +287,11 @@ func statsOf(rep *runner.Report) repStats {
 		return repStats{}
 	}
 	stats := repStats{
-		iterations: rep.Iterations,
-		broken:     rep.BrokenNamedCount(),
-		timeouts:   len(rep.Timeouts),
+		broken:   rep.BrokenNamedCount(),
+		timeouts: namedEntryCount(rep.Timeouts),
 	}
 	if rep.Summary != nil {
+		stats.hasSummary = true
 		stats.testsRun = rep.Summary.DistinctNamedTests
 		stats.flaky = rep.Summary.FlakeNamedCount
 		stats.races = rep.Summary.RaceNamedCount
@@ -309,33 +315,42 @@ func statsOf(rep *runner.Report) repStats {
 	return stats
 }
 
+// namedEntryCount counts entries that name a test. report.json also carries
+// package-level entries (Test == "") for build and binary failures, which are
+// outside the distinct-named-test denominator.
+func namedEntryCount(entries []runner.TestEntry) int {
+	n := 0
+	for _, e := range entries {
+		if e.Test != "" {
+			n++
+		}
+	}
+	return n
+}
+
 func diffSummaryRows(before, after *runner.Report) []row {
 	b, a := statsOf(before), statsOf(after)
 	rows := []row{
-		plainCount("Tests run", b.testsRun, a.testsRun),
+		testsRunRow(b, a),
 		withEvidence(
-			compareProblemCount("Broken tests", b.broken, a.broken, b.iterations, a.iterations),
+			problemCountRow("Broken tests", b.broken, a.broken),
 			proportionEvidence(b.broken, b.testsRun, a.broken, a.testsRun),
 		),
 		withEvidence(
-			compareProblemCount("Flaky tests", b.flaky, a.flaky, b.iterations, a.iterations),
+			problemCountRow("Flaky tests", b.flaky, a.flaky),
 			proportionEvidence(b.flaky, b.testsRun, a.flaky, a.testsRun),
 		),
 	}
 	if b.race || a.race {
-		races := compareProblemCount("Races", b.races, a.races, b.iterations, a.iterations)
-		if b.race && a.race {
-			races.evidence = proportionEvidence(b.races, b.testsRun, a.races, a.testsRun)
-		}
-		rows = append(rows, races)
+		rows = append(rows, racesRow(b, a))
 	}
 	rows = append(rows,
 		withEvidence(
-			compareProblemCount("Timeouts", b.timeouts, a.timeouts, b.iterations, a.iterations),
+			problemCountRow("Timeouts", b.timeouts, a.timeouts),
 			proportionEvidence(b.timeouts, b.testsRun, a.timeouts, a.testsRun),
 		),
 		withEvidence(
-			compareProblemCount("Slow tests", b.slow, a.slow, b.iterations, a.iterations),
+			problemCountRow("Slow tests", b.slow, a.slow),
 			proportionEvidence(b.slow, b.testsRun, a.slow, a.testsRun),
 		),
 		withEvidence(
@@ -349,6 +364,44 @@ func diffSummaryRows(before, after *runner.Report) []row {
 		compareDuration("Iteration wall time max", b.max, a.max),
 	)
 	return rows
+}
+
+func testsRunRow(b, a repStats) row {
+	r := row{label: "Tests run", before: testsRunCell(b), after: testsRunCell(a)}
+	if b.hasSummary && a.hasSummary {
+		r.change = strconv.Itoa(a.testsRun - b.testsRun)
+	}
+	return r
+}
+
+func testsRunCell(s repStats) string {
+	if !s.hasSummary {
+		return "—"
+	}
+	return strconv.Itoa(s.testsRun)
+}
+
+// racesRow compares race counts. A direction is only meaningful when both runs
+// used -race; otherwise the run that did not measure races shows a dash.
+func racesRow(b, a repStats) row {
+	if !b.race || !a.race {
+		return row{
+			label:  "Races",
+			before: countIfMeasured(b.races, b.race),
+			after:  countIfMeasured(a.races, a.race),
+		}
+	}
+	return withEvidence(
+		problemCountRow("Races", b.races, a.races),
+		proportionEvidence(b.races, b.testsRun, a.races, a.testsRun),
+	)
+}
+
+func countIfMeasured(n int, measured bool) string {
+	if !measured {
+		return "—"
+	}
+	return strconv.Itoa(n)
 }
 
 func withEvidence(r row, evidence string) row {
@@ -378,43 +431,16 @@ func durationEvidence(before, after []time.Duration) string {
 	return formatEvidence(p)
 }
 
-// compareProblemCount renders a count where fewer is better. When iteration
-// counts differ, counts are shown per iteration and compared as rates.
-func compareProblemCount(label string, before, after, beforeIters, afterIters int) row {
-	if beforeIters > 0 && afterIters > 0 && beforeIters != afterIters {
-		beforeRate := float64(before) / float64(beforeIters)
-		afterRate := float64(after) / float64(afterIters)
-		return row{
-			label:  label,
-			before: fmt.Sprintf("%d (%.1f/iter)", before, beforeRate),
-			after:  fmt.Sprintf("%d (%.1f/iter)", after, afterRate),
-			change: perIterChange(beforeRate, afterRate),
-		}
-	}
+// problemCountRow renders a count where fewer is better. Counts are distinct
+// flagged tests, which do not grow with iteration count, so they stay raw; the
+// iteration-count warning from diffWarnings covers runs of different lengths.
+func problemCountRow(label string, before, after int) row {
 	return row{
 		label:  label,
 		before: strconv.Itoa(before),
 		after:  strconv.Itoa(after),
 		change: countChange(after - before),
 	}
-}
-
-// plainCount renders a count with no better/worse direction.
-func plainCount(label string, before, after int) row {
-	return row{
-		label:  label,
-		before: strconv.Itoa(before),
-		after:  strconv.Itoa(after),
-		change: strconv.Itoa(after - before),
-	}
-}
-
-func perIterChange(before, after float64) string {
-	delta := after - before
-	if delta == 0 {
-		return ""
-	}
-	return fmt.Sprintf("%+.1f/iter", delta) + changeIcon(delta, false, true)
 }
 
 func compareFraction(label string, beforeN, beforeD, afterN, afterD int, lowerBetter bool) row {
@@ -505,26 +531,11 @@ func signedDuration(d time.Duration) string {
 	return "+" + d.Round(time.Millisecond).String()
 }
 
-func diffProblemTests(before, after *runner.Report) []testSection {
-	beforeCats := categories(before)
-	afterCats := categories(after)
-	keys := make([]testKey, 0, len(beforeCats)+len(afterCats))
-	seen := make(map[testKey]struct{}, len(beforeCats)+len(afterCats))
-	for _, cats := range []map[testKey]testCategory{beforeCats, afterCats} {
-		for k := range cats {
-			if _, ok := seen[k]; ok {
-				continue
-			}
-			seen[k] = struct{}{}
-			keys = append(keys, k)
-		}
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].pkg != keys[j].pkg {
-			return keys[i].pkg < keys[j].pkg
-		}
-		return keys[i].test < keys[j].test
-	})
+func diffProblemTests(before, after *runner.Report, racesCompared bool) []testSection {
+	beforeCats := categories(before, racesCompared)
+	afterCats := categories(after, racesCompared)
+	keys := unionKeys(beforeCats, afterCats)
+	sortKeys(keys)
 
 	byVerdict := make(map[verdict][]testRow)
 	for _, k := range keys {
@@ -549,12 +560,15 @@ func diffProblemTests(before, after *runner.Report) []testSection {
 	return sections
 }
 
-func categories(rep *runner.Report) map[testKey]testCategory {
+func categories(rep *runner.Report, includeRaces bool) map[testKey]testCategory {
 	out := make(map[testKey]testCategory)
 	if rep == nil {
 		return out
 	}
 	for _, group := range rep.TestGroups() {
+		if !includeRaces && group.CSVCategory == "race" {
+			continue
+		}
 		for _, entry := range *group.Entries {
 			k := testKey{pkg: entry.Package, test: entry.Test}
 			if _, ok := out[k]; ok {
@@ -617,7 +631,7 @@ func verdictFor(before testCategory, beforeOK bool, after testCategory, afterOK 
 		return verdictNew
 	}
 	if !afterOK {
-		return verdictFixed
+		return verdictUnflagged
 	}
 	_, beforeLower, beforeUpper, beforeRateOK := failRate(before.entry)
 	_, afterLower, afterUpper, afterRateOK := failRate(after.entry)
@@ -815,10 +829,10 @@ func plural(singular, pluralForm string, n int) string {
 	return pluralForm
 }
 
-func unionKeys(a, b map[testKey]runner.TestEntry) []testKey {
+func unionKeys[V any](a, b map[testKey]V) []testKey {
 	keys := make([]testKey, 0, len(a)+len(b))
 	seen := make(map[testKey]struct{}, len(a)+len(b))
-	for _, m := range []map[testKey]runner.TestEntry{a, b} {
+	for _, m := range []map[testKey]V{a, b} {
 		for k := range m {
 			if _, ok := seen[k]; ok {
 				continue

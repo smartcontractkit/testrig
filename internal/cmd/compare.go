@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -61,14 +60,7 @@ func loadCompareRun(wd, arg string) (compare.Run, error) {
 	if err != nil {
 		return compare.Run{}, fmt.Errorf("reading report from %s: %w", dir, err)
 	}
-	return compare.Run{Label: compareRunLabel(report, dir), Report: report}, nil
-}
-
-func compareRunLabel(report *runner.Report, dir string) string {
-	if report != nil && report.Run != nil && report.Run.Name != "" {
-		return report.Run.Name
-	}
-	return filepath.Base(dir)
+	return compare.Run{Report: report}, nil
 }
 
 func writeCompareMarkdown(cmd *cobra.Command, outputPath string, before, after compare.Run) error {
@@ -77,8 +69,8 @@ func writeCompareMarkdown(cmd *cobra.Command, outputPath string, before, after c
 		return err
 	}
 	if outputPath != "" {
-		//nolint:gosec // G306: report may be shared; user chooses the path, 0600 matches other artifacts
-		if err := os.WriteFile(outputPath, buf.Bytes(), 0600); err != nil {
+		//nolint:gosec // G306: user-chosen report path is meant to be shared
+		if err := os.WriteFile(outputPath, buf.Bytes(), 0644); err != nil {
 			return err
 		}
 		_, err := fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s\n", outputPath)

@@ -19,23 +19,25 @@ type Run struct {
 	Report *runner.Report
 }
 
-const reportFilename = "report.json"
-
 // Resolve returns the results folder for arg: arg itself if it holds
-// report.json, else diagnose-<arg> in wd. The error names both paths it tried.
+// report.json, else diagnose-<arg> in wd. Relative paths resolve from wd so both
+// candidates share one base. The error names both paths it tried.
 func Resolve(wd, arg string) (string, error) {
 	direct := arg
+	if !filepath.IsAbs(direct) {
+		direct = filepath.Join(wd, arg)
+	}
 	named := filepath.Join(wd, config.DiagnoseResultsNamePrefix+arg)
 	for _, dir := range []string{direct, named} {
 		if hasReport(dir) {
 			return dir, nil
 		}
 	}
-	return "", fmt.Errorf("no %s found in %s or %s", reportFilename, direct, named)
+	return "", fmt.Errorf("no %s found in %s or %s", runner.ReportFilename, direct, named)
 }
 
 func hasReport(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, reportFilename))
+	info, err := os.Stat(filepath.Join(dir, runner.ReportFilename))
 	return err == nil && !info.IsDir()
 }
 

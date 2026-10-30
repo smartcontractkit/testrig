@@ -971,18 +971,22 @@ func AnalyzeResults(resultsDir string, slowThreshold time.Duration) (*Report, Lo
 	return rep, logs, cleanup, nil
 }
 
+// ReportFilename is the file diagnose writes into a results folder and compare
+// reads back.
+const ReportFilename = "report.json"
+
 // WriteReport writes the report as pretty JSON to <resultsDir>/report.json.
 func WriteReport(resultsDir string, rep *Report) error {
 	b, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(resultsDir, "report.json"), b, 0600)
+	return os.WriteFile(filepath.Join(resultsDir, ReportFilename), b, 0600)
 }
 
 // ReadReport reads <resultsDir>/report.json.
 func ReadReport(resultsDir string) (*Report, error) {
-	b, err := os.ReadFile(filepath.Join(resultsDir, "report.json")) //nolint:gosec // G304: path from filepath.Join
+	b, err := os.ReadFile(filepath.Join(resultsDir, ReportFilename)) //nolint:gosec // G304: path from filepath.Join
 	if err != nil {
 		return nil, err
 	}

@@ -44,7 +44,7 @@ testrig compare before-race after-race -o race-compare.md
 
 `-n <name>` writes results to a stable `diagnose-<name>` folder instead of a timestamped one. The folder must not
 already exist, so a run never overwrites earlier results. `testrig compare` writes a markdown report with a
-before/after summary table, per-test verdicts (`New`, `Worse`, `No clear change`, `Better`, `Fixed`), per-package
+before/after summary table, per-test verdicts (`New`, `Worse`, `No clear change`, `Better`, `No longer flagged`), per-package
 race, flake, and speed breakdowns (races only when both runs used `-race`), and slow-test timings. The summary's
 `Evidence` column marks each change as `clear` (p < 0.01), `weak` (p < 0.05), `unclear`, or `—` (not testable), using
 Fisher's exact test for flagged-test and iteration rates and an exact Mann–Whitney U test for iteration wall times.

@@ -707,6 +707,23 @@ func TestMakeDiagnoseResultsDirNamedClash(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(repoRoot, "diagnose-before-race-1"))
 }
 
+func TestCheckDiagnoseResultsDir(t *testing.T) {
+	t.Parallel()
+	repoRoot := makeTestRepoRoot(t)
+	conf := &config.App{RepoRoot: repoRoot, Name: "before-race"}
+
+	require.NoError(t, CheckDiagnoseResultsDir(conf))
+	require.NoError(t, os.Mkdir(filepath.Join(repoRoot, "diagnose-before-race"), 0700))
+
+	err := CheckDiagnoseResultsDir(conf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "diagnose-before-race already exists")
+	assert.Contains(t, err.Error(), "choose another --name or delete it")
+
+	assert.NoError(t, CheckDiagnoseResultsDir(&config.App{RepoRoot: repoRoot}), "unnamed runs are not pre-checked")
+	assert.NoError(t, CheckDiagnoseResultsDir(nil))
+}
+
 func TestNewRunMetaRecordsName(t *testing.T) {
 	t.Parallel()
 	conf := &config.App{Iterations: 2, Name: "before-race"}

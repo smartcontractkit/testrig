@@ -37,6 +37,17 @@ func TestResolve(t *testing.T) {
 		assert.Equal(t, dir, got)
 	})
 
+	t.Run("relative path resolves from wd", func(t *testing.T) {
+		t.Parallel()
+		wd := t.TempDir()
+		dir := filepath.Join(wd, "sub")
+		require.NoError(t, os.Mkdir(dir, 0700))
+		writeTestReport(t, dir)
+		got, err := Resolve(wd, "sub")
+		require.NoError(t, err)
+		assert.Equal(t, dir, got)
+	})
+
 	t.Run("missing names both paths", func(t *testing.T) {
 		t.Parallel()
 		wd := t.TempDir()
@@ -58,14 +69,14 @@ func TestWriteVerdictsAndSummary(t *testing.T) {
 	worseIdx := strings.Index(out, "### Worse")
 	noChangeIdx := strings.Index(out, "### No clear change")
 	betterIdx := strings.Index(out, "### Better")
-	fixedIdx := strings.Index(out, "### Fixed")
-	for _, idx := range []int{newIdx, worseIdx, noChangeIdx, betterIdx, fixedIdx} {
+	unflaggedIdx := strings.Index(out, "### No longer flagged")
+	for _, idx := range []int{newIdx, worseIdx, noChangeIdx, betterIdx, unflaggedIdx} {
 		require.NotEqual(t, -1, idx, "missing verdict section in:\n%s", out)
 	}
 	assert.Less(t, newIdx, worseIdx)
 	assert.Less(t, worseIdx, noChangeIdx)
 	assert.Less(t, noChangeIdx, betterIdx)
-	assert.Less(t, betterIdx, fixedIdx)
+	assert.Less(t, betterIdx, unflaggedIdx)
 
 	assert.Contains(t, out, "| TestNew | pkg/a | ok | failure |")
 	assert.Contains(t, out, "| TestFixed | pkg/a | failure | ok |")
@@ -162,28 +173,82 @@ func TestWriteEmptyReports(t *testing.T) {
 	require.NoError(t, err)
 	out := buf.String()
 	assert.Contains(t, out, "# testrig compare: before → after")
+	assert.Contains(t, out, "| Tests run | — | — |")
 	assert.Contains(t, out, "_No problem tests in either run._")
 	assert.NotContains(t, out, "## Slow tests")
 	assert.NotContains(t, out, "| Races |")
 }
 
-func TestWriteComparesCountsAsRatesWhenIterationsDiffer(t *testing.T) {
+func TestWriteComparesRawCountsWhenIterationsDiffer(t *testing.T) {
 	t.Parallel()
+	// Distinct flagged tests do not grow with iteration count, so counts stay raw
+	// instead of being divided by iterations.
 	before := &runner.Report{
 		Iterations: 10,
-		Failures:   []runner.TestEntry{testEntry("pkg/a", "TestBroken", 1, 10)},
+		Run:        &runner.RunMeta{DiagnoseIterations: 10},
+		Summary:    &runner.ReportSummary{DistinctNamedTests: 20},
+		Failures:   []runner.TestEntry{testEntry("pkg/a", "TestBroken", 10, 10)},
 	}
 	after := &runner.Report{
-		Iterations: 20,
-		Failures: []runner.TestEntry{
-			testEntry("pkg/a", "TestB1", 1, 20),
-			testEntry("pkg/a", "TestB2", 1, 20),
-			testEntry("pkg/a", "TestB3", 1, 20),
-			testEntry("pkg/a", "TestB4", 1, 20),
-		},
+		Iterations: 30,
+		Run:        &runner.RunMeta{DiagnoseIterations: 30},
+		Summary:    &runner.ReportSummary{DistinctNamedTests: 20},
+		Failures:   []runner.TestEntry{testEntry("pkg/a", "TestBroken", 30, 30)},
 	}
 	out := renderComparison(t, before, after)
-	assert.Contains(t, out, "| Broken tests | 1 (0.1/iter) | 4 (0.2/iter) | +0.1/iter ❌ |")
+
+	assert.Contains(t, out, "| Broken tests | 1 | 1 | 0 | — |")
+	assert.Contains(t, out, "[!WARNING]")
+	assert.Contains(t, out, "iteration counts differ")
+}
+
+func TestWriteRaceSummaryWhenOneRunLacksRaceFlag(t *testing.T) {
+	t.Parallel()
+	raceRun := &runner.Report{
+		Iterations: 10,
+		Run:        &runner.RunMeta{Race: true, DiagnoseIterations: 10},
+		Summary:    &runner.ReportSummary{DistinctNamedTests: 10, RaceNamedCount: 2},
+		Races:      []runner.TestEntry{testEntry("pkg/a", "TestRace", 2, 10)},
+	}
+	plainRun := &runner.Report{
+		Iterations: 10,
+		Run:        &runner.RunMeta{DiagnoseIterations: 10},
+		Summary:    &runner.ReportSummary{DistinctNamedTests: 10},
+	}
+
+	raceFirst := renderComparison(t, raceRun, plainRun)
+	assert.Contains(t, raceFirst, "| Races | 2 | — |")
+	assert.Contains(t, raceFirst, "only one run used -race")
+	assert.NotContains(t, raceFirst, "-2 ✅")
+	assert.NotContains(t, raceFirst, "| TestRace |")
+
+	plainFirst := renderComparison(t, plainRun, raceRun)
+	assert.Contains(t, plainFirst, "| Races | — | 2 |")
+	assert.Contains(t, plainFirst, "only one run used -race")
+	assert.NotContains(t, plainFirst, "+2 ❌")
+	assert.NotContains(t, plainFirst, "| TestRace |")
+}
+
+func TestWriteSummaryCountsNamedTimeoutsOnly(t *testing.T) {
+	t.Parallel()
+	// A package-level timeout (Test == "") is not part of the distinct-named-test
+	// denominator, so the summary counts only named timeouts.
+	before := &runner.Report{
+		Iterations: 10,
+		Run:        &runner.RunMeta{DiagnoseIterations: 10},
+		Summary:    &runner.ReportSummary{DistinctNamedTests: 1},
+		Timeouts: []runner.TestEntry{
+			{Package: "pkg/a"},
+			testEntry("pkg/a", "TestTimeout", 1, 10),
+		},
+	}
+	after := &runner.Report{
+		Iterations: 10,
+		Run:        &runner.RunMeta{DiagnoseIterations: 10},
+		Summary:    &runner.ReportSummary{DistinctNamedTests: 1},
+	}
+	out := renderComparison(t, before, after)
+	assert.Contains(t, out, "| Timeouts | 1 | 0 | -1 ✅ |")
 }
 
 func TestWriteTimingDeltas(t *testing.T) {

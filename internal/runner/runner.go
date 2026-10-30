@@ -440,12 +440,33 @@ func makeNamedDiagnoseResultsDir(repoRoot, name string) (string, error) {
 		return dir, nil
 	}
 	if errors.Is(err, os.ErrExist) {
-		return "", fmt.Errorf(
-			"results folder %s already exists; choose another --name or delete it",
-			base,
-		)
+		return "", errNamedDiagnoseResultsDirExists(base)
 	}
 	return "", err
+}
+
+// CheckDiagnoseResultsDir fails fast when --name would clash with an existing
+// results folder, so the run does not spend time on resource provisioning first.
+// makeNamedDiagnoseResultsDir still owns the atomic create; a folder created
+// between this check and that call is reported there.
+func CheckDiagnoseResultsDir(conf *config.App) error {
+	if conf == nil || conf.Name == "" {
+		return nil
+	}
+	base := namedDiagnoseResultsDirName(conf.Name)
+	_, err := os.Stat(filepath.Join(conf.RepoRoot, base))
+	switch {
+	case err == nil:
+		return errNamedDiagnoseResultsDirExists(base)
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	default:
+		return fmt.Errorf("checking for existing results folder %s: %w", base, err)
+	}
+}
+
+func errNamedDiagnoseResultsDirExists(base string) error {
+	return fmt.Errorf("results folder %s already exists; choose another --name or delete it", base)
 }
 
 type diagnoseIterationResult struct {
