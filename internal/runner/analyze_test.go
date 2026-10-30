@@ -1102,6 +1102,77 @@ func TestAnalyzeResultsRoundtrip(t *testing.T) {
 	assert.Contains(t, string(b), `"TestFlaky"`)
 }
 
+func TestReadReportRoundTripsWriteReport(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	lower, upper := 0.1, 0.4
+	want := &Report{
+		Iterations:    2,
+		SlowThreshold: 3 * time.Second,
+		Run: &RunMeta{
+			ResultsDirBasename: "diagnose-before",
+			Name:               "before",
+			GoTestArgs:         []string{"-race", "./..."},
+			DiagnoseIterations: 2,
+			SlowThreshold:      3 * time.Second,
+			Race:               true,
+		},
+		Summary: &ReportSummary{DistinctNamedTests: 3, FlakeNamedCount: 1, SlowCount: 1},
+		Failures: []TestEntry{
+			{
+				Package:       "pkg/a",
+				Test:          "TestBroken",
+				Runs:          2,
+				Fails:         2,
+				FailRateLower: &lower,
+				FailRateUpper: &upper,
+				P50Elapsed:    2 * time.Second,
+				MaxElapsed:    3 * time.Second,
+			},
+		},
+		IterationSummaries: []IterationSummary{{Index: 0, Result: "fail"}, {Index: 1, Result: "pass"}},
+	}
+	require.NoError(t, WriteReport(dir, want))
+
+	got, err := ReadReport(dir)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, want.Run, got.Run)
+	assert.Equal(t, want.Iterations, got.Iterations)
+	assert.Equal(t, want.Summary, got.Summary)
+	assert.Equal(t, want.IterationSummaries, got.IterationSummaries)
+	require.Len(t, got.Failures, 1)
+	gotFailure := got.Failures[0]
+	assert.Equal(t, "TestBroken", gotFailure.Test)
+	assert.Equal(t, 2, gotFailure.Fails)
+	assert.Equal(t, &lower, gotFailure.FailRateLower)
+	assert.Equal(t, &upper, gotFailure.FailRateUpper)
+	assert.Equal(t, 2*time.Second, gotFailure.P50Elapsed)
+	assert.Equal(t, 3*time.Second, gotFailure.MaxElapsed)
+	assert.Empty(t, gotFailure.FailIters, "json:\"-\" fields are not persisted")
+}
+
+func TestReadReportMissingFile(t *testing.T) {
+	t.Parallel()
+	_, err := ReadReport(t.TempDir())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestBrokenNamedCount(t *testing.T) {
+	t.Parallel()
+	rep := &Report{
+		Failures: []TestEntry{
+			{Package: "pkg/a", Test: "TestA"},
+			{Package: "pkg/a", Test: "TestB"},
+			{Package: "pkg/b"}, // package-level failure is not a named test
+		},
+	}
+	assert.Equal(t, 2, rep.BrokenNamedCount())
+	var nilReport *Report
+	assert.Zero(t, nilReport.BrokenNamedCount())
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	require.NoError(t, err)

@@ -674,6 +674,72 @@ func TestMakeDiagnoseResultsDirAvoidsExistingDirectory(t *testing.T) {
 	assert.DirExists(t, second)
 }
 
+func TestMakeDiagnoseResultsDirNamed(t *testing.T) {
+	t.Parallel()
+	repoRoot := makeTestRepoRoot(t)
+	conf := &config.App{
+		RepoRoot:   repoRoot,
+		Name:       "before-race",
+		Iterations: 1,
+	}
+	dir, err := makeDiagnoseResultsDir(conf, []string{"./pkg"}, diagnoseResultsDirNameAt)
+	require.NoError(t, err)
+
+	assert.Equal(t, filepath.Join(repoRoot, "diagnose-before-race"), dir)
+	assert.DirExists(t, dir)
+}
+
+func TestMakeDiagnoseResultsDirNamedClash(t *testing.T) {
+	t.Parallel()
+	repoRoot := makeTestRepoRoot(t)
+	conf := &config.App{
+		RepoRoot:   repoRoot,
+		Name:       "before-race",
+		Iterations: 1,
+	}
+	_, err := makeDiagnoseResultsDir(conf, []string{"./pkg"}, diagnoseResultsDirNameAt)
+	require.NoError(t, err)
+
+	_, err = makeDiagnoseResultsDir(conf, []string{"./other"}, diagnoseResultsDirNameAt)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "diagnose-before-race already exists")
+	assert.Contains(t, err.Error(), "choose another --name or delete it")
+	assert.NoDirExists(t, filepath.Join(repoRoot, "diagnose-before-race-1"))
+}
+
+func TestCheckDiagnoseResultsDir(t *testing.T) {
+	t.Parallel()
+	repoRoot := makeTestRepoRoot(t)
+	conf := &config.App{RepoRoot: repoRoot, Name: "before-race"}
+
+	require.NoError(t, CheckDiagnoseResultsDir(conf))
+	require.NoError(t, os.Mkdir(filepath.Join(repoRoot, "diagnose-before-race"), 0700))
+
+	err := CheckDiagnoseResultsDir(conf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "diagnose-before-race already exists")
+	assert.Contains(t, err.Error(), "choose another --name or delete it")
+
+	assert.NoError(t, CheckDiagnoseResultsDir(&config.App{RepoRoot: repoRoot}), "unnamed runs are not pre-checked")
+	assert.NoError(t, CheckDiagnoseResultsDir(nil))
+}
+
+func TestNewRunMetaRecordsName(t *testing.T) {
+	t.Parallel()
+	conf := &config.App{Iterations: 2, Name: "before-race"}
+	meta := newRunMeta(conf, []string{"./pkg"}, "/repo/diagnose-before-race", diagnoseResultsDirNameAt, nil)
+	require.NotNil(t, meta)
+	assert.Equal(t, "before-race", meta.Name)
+	assert.Equal(t, "diagnose-before-race", meta.ResultsDirBasename)
+}
+
+func TestNewRunMetaOmitsEmptyName(t *testing.T) {
+	t.Parallel()
+	meta := newRunMeta(&config.App{Iterations: 1}, []string{"./pkg"}, "/repo/diagnose-x", diagnoseResultsDirNameAt, nil)
+	require.NotNil(t, meta)
+	assert.Empty(t, meta.Name)
+}
+
 func TestRunDiagnoseIterationsDumpDBSkippedWhenCancelled(t *testing.T) {
 	t.Parallel()
 	conf := &config.App{
@@ -1042,8 +1108,8 @@ func TestRunDiagnoseIterations_serialLiveProgressMutex_noMergedProgressAndTableL
 // carriage return, matching how a terminal shows the line when the buffer records
 // many \r redraws before one newline.
 func ttySegmentAfterLastCR(s string) string {
-	if i := strings.LastIndex(s, "\r"); i >= 0 {
-		return s[i+1:]
+	if _, after, ok := strings.CutLast(s, "\r"); ok {
+		return after
 	}
 	return s
 }

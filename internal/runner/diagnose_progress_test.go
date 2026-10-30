@@ -21,8 +21,8 @@ func testProgressPrinter(t *testing.T) (*output.Printer, *strings.Builder) {
 
 func progressPlainFromOutput(got string) string {
 	const prefix = "\r\x1b[2K"
-	if i := strings.LastIndex(got, prefix); i >= 0 {
-		return lineWithoutANSI(got[i+len(prefix):])
+	if _, after, ok := strings.CutLast(got, prefix); ok {
+		return lineWithoutANSI(after)
 	}
 	return lineWithoutANSI(got)
 }
