@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,47 @@ func TestValidateDiagnose(t *testing.T) {
 			conf:    &App{Iterations: 1, ParallelIterations: 1, FailFastOn: []string{"timeout", "banana"}},
 			wantErr: `--fail-fast-on must contain only "any", "failure", "timeout", or "slow"; got "banana"`,
 		},
+		{
+			name: "valid name",
+			conf: &App{Iterations: 1, ParallelIterations: 1, Name: "before-race.v2_final"},
+		},
+		{
+			name:    "name with parent path",
+			conf:    &App{Iterations: 1, ParallelIterations: 1, Name: "../x"},
+			wantErr: "--name",
+		},
+		{
+			name:    "name with slash",
+			conf:    &App{Iterations: 1, ParallelIterations: 1, Name: "a/b"},
+			wantErr: "--name",
+		},
+		{
+			name:    "name with spaces",
+			conf:    &App{Iterations: 1, ParallelIterations: 1, Name: "a b"},
+			wantErr: "--name",
+		},
+		{
+			name:    "name with leading dash",
+			conf:    &App{Iterations: 1, ParallelIterations: 1, Name: "-x"},
+			wantErr: "--name",
+		},
+		{
+			name: "name too long",
+			conf: &App{
+				Iterations:         1,
+				ParallelIterations: 1,
+				Name:               strings.Repeat("a", MaxDiagnoseResultsBasename),
+			},
+			wantErr: "too long",
+		},
+		{
+			name: "name at length limit",
+			conf: &App{
+				Iterations:         1,
+				ParallelIterations: 1,
+				Name:               strings.Repeat("a", MaxDiagnoseResultsBasename-len(DiagnoseResultsNamePrefix)),
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -68,6 +110,7 @@ func TestLoadBindsPersistentAndLocalFlags(t *testing.T) {
 	}
 	sub.Flags().Int("iterations", 1, "")
 	sub.Flags().Int("parallel-iterations", 1, "")
+	sub.Flags().String("name", "", "")
 	sub.Flags().StringSlice("fail-fast-on", nil, "")
 	sub.Flags().Bool("shuffle-seed", false, "")
 	root.AddCommand(sub)
@@ -77,6 +120,7 @@ func TestLoadBindsPersistentAndLocalFlags(t *testing.T) {
 		"--iteration-setup", "echo setup",
 		"--iterations", "7",
 		"--parallel-iterations", "3",
+		"--name", "before-race",
 		"--fail-fast-on", "timeout,slow",
 		"--shuffle-seed",
 	})
@@ -90,6 +134,7 @@ func TestLoadBindsPersistentAndLocalFlags(t *testing.T) {
 	assert.Equal(t, "echo setup", conf.IterationSetup)
 	assert.Equal(t, 7, conf.Iterations)
 	assert.Equal(t, 3, conf.ParallelIterations)
+	assert.Equal(t, "before-race", conf.Name)
 	assert.Equal(t, []string{"timeout", "slow"}, conf.FailFastOn)
 	assert.True(t, conf.Shuffle)
 }

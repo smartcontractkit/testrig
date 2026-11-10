@@ -411,6 +411,9 @@ func EffectiveParallelIterations(conf *config.App) int {
 }
 
 func makeDiagnoseResultsDir(conf *config.App, goTestArgs []string, now time.Time) (string, error) {
+	if conf.Name != "" {
+		return makeNamedDiagnoseResultsDir(conf.RepoRoot, conf.Name)
+	}
 	base := filepath.Join(conf.RepoRoot, diagnoseResultsDirName(goTestArgs, now))
 	for i := 0; ; i++ {
 		dir := base
@@ -425,6 +428,45 @@ func makeDiagnoseResultsDir(conf *config.App, goTestArgs []string, now time.Time
 			return "", err
 		}
 	}
+}
+
+// makeNamedDiagnoseResultsDir creates diagnose-<name> exactly once. A clash is
+// an error, not a suffix bump: the user named the run to find it again.
+func makeNamedDiagnoseResultsDir(repoRoot, name string) (string, error) {
+	base := namedDiagnoseResultsDirName(name)
+	dir := filepath.Join(repoRoot, base)
+	err := os.Mkdir(dir, 0700)
+	if err == nil {
+		return dir, nil
+	}
+	if errors.Is(err, os.ErrExist) {
+		return "", errNamedDiagnoseResultsDirExists(base)
+	}
+	return "", err
+}
+
+// CheckDiagnoseResultsDir fails fast when --name would clash with an existing
+// results folder, so the run does not spend time on resource provisioning first.
+// makeNamedDiagnoseResultsDir still owns the atomic create; a folder created
+// between this check and that call is reported there.
+func CheckDiagnoseResultsDir(conf *config.App) error {
+	if conf == nil || conf.Name == "" {
+		return nil
+	}
+	base := namedDiagnoseResultsDirName(conf.Name)
+	_, err := os.Stat(filepath.Join(conf.RepoRoot, base))
+	switch {
+	case err == nil:
+		return errNamedDiagnoseResultsDirExists(base)
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	default:
+		return fmt.Errorf("checking for existing results folder %s: %w", base, err)
+	}
+}
+
+func errNamedDiagnoseResultsDirExists(base string) error {
+	return fmt.Errorf("results folder %s already exists; choose another --name or delete it", base)
 }
 
 type diagnoseIterationResult struct {
@@ -1509,6 +1551,7 @@ func newRunMeta(
 	}
 	return &RunMeta{
 		ResultsDirBasename: filepath.Base(resultsDir),
+		Name:               conf.Name,
 		StartedAt:          started.UTC(),
 		FinishedAt:         fin,
 		GoTestArgs:         args,

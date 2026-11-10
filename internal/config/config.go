@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 type App struct {
 	RepoRoot           string
 	AIOutput           bool
+	Name               string
 	Iterations         int
 	ParallelIterations int
 	SlowThreshold      time.Duration
@@ -32,6 +34,18 @@ type App struct {
 	IterationTeardown  string
 	shellHooks         map[string]string
 }
+
+// Diagnose results folder naming shared with internal/runner. --name validation
+// uses the same prefix and length budget so a valid name always yields a legal
+// folder name.
+const (
+	DiagnoseResultsNamePrefix  = "diagnose-"
+	MaxDiagnoseResultsBasename = 220
+)
+
+// diagnoseNamePattern allows names that are safe as a folder basename: no
+// separators, no leading dot or dash, so diagnose-<name> stays inside RepoRoot.
+var diagnoseNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // ShellCommand returns the shell command bound to a catalog flag (e.g. iteration-setup).
 func (a *App) ShellCommand(flag string) string {
@@ -59,6 +73,14 @@ var validFailFastOn = map[string]struct{}{
 type flagBinder func(*App, *pflag.FlagSet) error
 
 var flagRegistry = map[string]flagBinder{
+	"name": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetString("name")
+		if err != nil {
+			return err
+		}
+		conf.Name = v
+		return nil
+	},
 	"ai-output": func(conf *App, flags *pflag.FlagSet) error {
 		v, err := flags.GetBool("ai-output")
 		if err != nil {
@@ -137,11 +159,38 @@ func ValidateDiagnose(conf *App) error {
 	if conf.ParallelIterations > conf.Iterations {
 		return errors.New("--parallel-iterations must be <= --iterations")
 	}
+	if err := validateDiagnoseName(conf.Name); err != nil {
+		return err
+	}
 	failFastOn, err := NormalizeFailFastOn(conf.FailFastOn)
 	if err != nil {
 		return err
 	}
 	conf.FailFastOn = failFastOn
+	return nil
+}
+
+// validateDiagnoseName checks --name. It validates rather than sanitizes because
+// the user types the same name again in `testrig compare`.
+func validateDiagnoseName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if !diagnoseNamePattern.MatchString(name) {
+		return fmt.Errorf(
+			`--name %q is invalid: use letters, digits, ".", "_" or "-", starting with a letter or digit`,
+			name,
+		)
+	}
+	folder := DiagnoseResultsNamePrefix + name
+	if len(folder) > MaxDiagnoseResultsBasename {
+		return fmt.Errorf(
+			"--name is too long: results folder %s is %d bytes; limit is %d",
+			folder,
+			len(folder),
+			MaxDiagnoseResultsBasename,
+		)
+	}
 	return nil
 }
 

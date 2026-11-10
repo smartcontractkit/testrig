@@ -22,7 +22,11 @@ Pass every flag and package pattern you want forwarded to go test after "--". Th
 prepends "go test -json" (duplicate -json in your arguments is ignored) and adds "-count=1"
 per iteration. Do not pass -count in go test flags; use diagnose --iterations for repetition.
 Do not pass go test -trace; use diagnose --trace instead. With --shuffle-seed, a per-iteration
--shuffle=<seed> is appended and recorded in report.json.`,
+-shuffle=<seed> is appended and recorded in report.json.
+
+Use --name (or -n) to write results to a stable folder, diagnose-<name>, instead of a
+timestamped one. That folder must not exist yet, and it lets "testrig compare" refer to the
+run by name.`,
 		Example: "",
 		Args:    cobra.MinimumNArgs(1),
 		RunE: withGlobalHooks(runnerOpts, func(cmd *cobra.Command, args []string) (err error) {
@@ -33,6 +37,9 @@ Do not pass go test -trace; use diagnose --trace instead. With --shuffle-seed, a
 			out := output.NewFromApp(conf)
 
 			if err = config.ValidateDiagnose(conf); err != nil {
+				return err
+			}
+			if err = runner.CheckDiagnoseResultsDir(conf); err != nil {
 				return err
 			}
 
@@ -80,6 +87,8 @@ Do not pass go test -trace; use diagnose --trace instead. With --shuffle-seed, a
 	}
 
 	cmd.Flags().Int("iterations", 1, "number of full test runs")
+	cmd.Flags().
+		StringP("name", "n", "", "name the results folder diagnose-<name>; it must not already exist")
 	cmd.Flags().Int("parallel-iterations", 1, "maximum number of diagnose iterations to run concurrently")
 	cmd.Flags().
 		Duration("slow-threshold", 30*time.Second, "tests whose max Elapsed exceeds this are flagged slow")

@@ -41,7 +41,8 @@ all other flags are forwarded to go test. For example:
 Subcommands:
 
 - gotestsum: Run tests using gotestsum for those that prefer its output and tools
-- diagnose: Run tests multiple times to collect statistics, debug logs, and more to help find flakes, races, panics, timeouts, and other issues`
+- diagnose: Run tests multiple times to collect statistics, debug logs, and more to help find flakes, races, panics, timeouts, and other issues
+- compare: Compare two diagnose runs and write a markdown report`
 
 	gotestsumLongTmpl = `Runs gotestsum from the repo root.
 

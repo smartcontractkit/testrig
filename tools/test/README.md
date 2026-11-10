@@ -115,7 +115,7 @@ tool github.com/smartcontractkit/testrig/tools/test
 Run native hooks against testrig itself:
 
 ```sh
-just dogfood_native
+mise run dogfood:native
 # equivalent:
 go tool test diagnose --iterations 3 --parallel-iterations 3 -- ./...
 ```

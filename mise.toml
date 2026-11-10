@@ -1,0 +1,85 @@
+[tools]
+"aqua:kjanat/actionlint" = "latest"
+go = "1.27.3"
+golangci-lint = "2.15.0"
+goreleaser = "2.16.0"
+gotestsum = "1.13.0"
+lefthook = "2.2.2"
+
+[tasks.lint]
+description = "Run linting with auto-fixes"
+run = "golangci-lint run ./... --fix"
+
+[tasks.test]
+description = "Run tests with coverage reporting"
+run = "gotestsum -- -cover ./..."
+
+[tasks."test:race"]
+alias = "test_race"
+description = "Run tests with the race detector enabled"
+run = "gotestsum -- -race -count=3 ./..."
+
+[tasks.bench]
+description = "Run standard benchmarks"
+run = "go test -bench=. -benchmem -run='^$' ./..."
+
+[tasks."bench:overhead:dummy"]
+alias = "bench_overhead_matrix_dummy"
+description = "Diagnose overhead matrix (dummy; fast). 5 runs averaged per cell; TESTRIG_BENCH_OVERHEAD_RUNS=3 to override."
+run = "TESTRIG_BENCH_OVERHEAD=1 go test ./internal/runner/ -run='^TestDiagnoseOverhead_Dummy$' -count=1 -v"
+
+[tasks."bench:overhead:dogfood"]
+alias = "bench_overhead_matrix_dogfood"
+description = "Run benchmark to measure diagnose overhead against the full testrig module (./...); slow."
+run = "TESTRIG_BENCH_OVERHEAD=1 go test ./internal/runner/ -run='^TestDiagnoseOverhead_Dogfood$' -count=1 -v"
+
+[tasks."bench:overhead"]
+alias = "bench_overhead_matrix"
+description = "Run benchmarks to measure diagnose overhead for both dummy and dogfood targets."
+depends = ["bench:overhead:dummy", "bench:overhead:dogfood"]
+
+[tasks.goreleaser]
+description = "Local GoReleaser dry-run (snapshot)"
+run = "goreleaser release --clean --snapshot"
+
+[tasks.install]
+description = "Install the testrig CLI"
+run = "go install ./cmd/testrig"
+
+[tasks.lefthook]
+description = "Verify lefthook hook CLIs are on PATH, then sync git hooks."
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+missing=""
+for cmd in lefthook actionlint golangci-lint go; do
+  if ! command -v "$cmd" >/dev/null; then
+    missing="${missing}  - ${cmd}\n"
+  fi
+done
+if [ -n "$missing" ]; then
+  echo "Missing dependencies (install with 'mise install', then re-run 'mise run lefthook'):" >&2
+  printf '%b' "$missing" >&2
+  exit 1
+fi
+go mod download
+lefthook install
+'''
+
+[tasks."dogfood:cli"]
+alias = "dogfood_cli"
+description = "Run the in-repo testrig CLI against this repository (smoke-test diagnose)."
+usage = '''
+arg "[iterations]" default="3"
+arg "[parallel_iterations]" default="3"
+'''
+run = 'go run ./cmd/testrig diagnose --iterations "${usage_iterations:-3}" --parallel-iterations "${usage_parallel_iterations:-3}" -- ./...'
+
+[tasks."dogfood:native"]
+alias = "dogfood_native"
+description = "Run the native tools/test binary against this repository."
+usage = '''
+arg "[iterations]" default="3"
+arg "[parallel_iterations]" default="3"
+'''
+run = 'go tool test diagnose --iterations "${usage_iterations:-3}" --parallel-iterations "${usage_parallel_iterations:-3}" -- ./...'

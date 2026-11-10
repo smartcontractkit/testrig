@@ -5,13 +5,20 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/smartcontractkit/testrig/internal/config"
 	"github.com/smartcontractkit/testrig/modresolve"
 )
 
 const (
-	diagnoseResultsNamePrefix  = "diagnose-"
-	maxDiagnoseResultsBasename = 220
+	diagnoseResultsNamePrefix  = config.DiagnoseResultsNamePrefix
+	maxDiagnoseResultsBasename = config.MaxDiagnoseResultsBasename
 )
+
+// namedDiagnoseResultsDirName returns the results folder basename for a named
+// diagnose run: diagnose-<name>. Stable so `testrig compare` can find it again.
+func namedDiagnoseResultsDirName(name string) string {
+	return diagnoseResultsNamePrefix + name
+}
 
 // parseGoTestRunPattern returns the last `-run` pattern from go test-style argv
 // (before `-args`), mirroring how Go applies repeated `-run` flags.

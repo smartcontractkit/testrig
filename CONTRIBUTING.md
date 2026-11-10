@@ -1,9 +1,10 @@
 # Contributing
 
-Use [just](https://github.com/casey/just) instead of `make`.
+Use [mise](https://mise.jdx.dev) for tool dependencies and tasks.
 
 ```sh
-just lefthook # Install pre-commit and pre-push hooks
+mise install      # Install tool dependencies
+mise run lefthook # Install pre-commit and pre-push hooks
 ```
 
 ## Releasing
@@ -17,5 +18,5 @@ git tag v0.1.0 && git push --tags
 Local snapshot (builds to `dist/`, no publish):
 
 ```sh
-just goreleaser
+mise run goreleaser
 ```
