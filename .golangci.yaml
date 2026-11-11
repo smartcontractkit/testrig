@@ -22,6 +22,17 @@ linters:
     - revive
     - depguard
     - modernize
+  exclusions:
+    rules:
+      # Vendored copy of cmd/internal/test2json. Keep its source close to
+      # upstream so it can be refreshed from a Go release.
+      - path: internal/test2json/
+        linters:
+          - errcheck
+          - gocyclo
+          - gosec
+          - revive
+          - staticcheck
   settings:
     godox:
       keywords:

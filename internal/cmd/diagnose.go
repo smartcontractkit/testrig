@@ -99,6 +99,10 @@ run by name.`,
 		Bool("shuffle-seed", false, "randomize test order each iteration; a unique seed is generated per iteration and recorded in report.json for reproduction")
 	cmd.Flags().
 		Bool("trace", false, "visualize the test execution traces")
+	cmd.Flags().
+		Bool("build-once", true, "build test binaries once before running iterations")
+	cmd.Flags().
+		Bool("strip-binaries", true, "strip linked test binaries unless go test -ldflags is set")
 
 	cmd.AddCommand(newDiagnoseAnalyzeCmd())
 

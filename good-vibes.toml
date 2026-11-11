@@ -1,0 +1,18 @@
+# Project good-vibes config.
+#
+# Layers, lowest to highest: embedded defaults, ~/.config/good-vibes/config.toml,
+# this file, good-vibes.local.toml, GOOD_VIBES_* env, flags.
+# Run `good-vibes config show --origin` to see where every value comes from.
+
+# Fail older binaries instead of letting them misread this file.
+# min_version = "0.1.0"
+
+[change]
+dir = "changes"
+
+[flow]
+# Require accepted_by and accepted_at before design or implement. accepted_in is optional; when set, it must be a URL.
+require_accept = false
+
+[docs]
+root = "docs"

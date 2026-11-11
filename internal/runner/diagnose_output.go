@@ -23,6 +23,7 @@ type aiDiagnoseComplete struct {
 	Results  string         `json:"results"`
 	Trace    string         `json:"trace,omitempty"`
 	Summary  *ReportSummary `json:"summary"`
+	Build    *BuildMetrics  `json:"build,omitempty"`
 	Findings aiFindings     `json:"findings"`
 }
 
@@ -51,6 +52,7 @@ func marshalAIDiagnoseComplete(resultsDir, reportPath, tracePath string, rep *Re
 	}
 	if rep != nil {
 		ev.Summary = rep.Summary
+		ev.Build = rep.Build
 		ev.Findings = aiFindingsFromReport(rep)
 	}
 	return json.Marshal(ev)

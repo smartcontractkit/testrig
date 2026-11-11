@@ -1,0 +1,3 @@
+build_start
+build_compile s=41 cache=cold pkgs=1910 cached=78
+build_link s=78 bins=175 ext=12 strip=1 floor_s=78

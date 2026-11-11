@@ -17,3 +17,10 @@ dist/
 # Agents
 .antigravitycli/
 .claude/
+
+# good-vibes runtime state
+.good-vibes/
+good-vibes.local.toml
+
+# rumdl cache
+.rumdl_cache/

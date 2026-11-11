@@ -36,6 +36,40 @@ func printOverallScope(w io.Writer, rep *Report) {
 	}
 }
 
+// overallBuildLine describes compile and link overhead just above the scope
+// line. In go-test mode it states why every iteration still builds.
+func overallBuildLine(rep *Report) string {
+	if rep == nil || rep.Build == nil {
+		return ""
+	}
+	b := rep.Build
+	if b.Mode == buildModeGoTest {
+		if b.FallbackReason == "" {
+			return "build per iteration"
+		}
+		return "build per iteration (" + b.FallbackReason + ")"
+	}
+	if b.Mode != buildModePrebuilt {
+		return ""
+	}
+	var parts []string
+	compile := "build compile " + formatDiagnoseWallClock(b.CompileWall)
+	if b.Cache != "" {
+		compile += " (" + b.Cache + ")"
+	}
+	parts = append(parts, compile)
+	if b.LinkWall > 0 {
+		parts = append(parts, "link "+formatDiagnoseWallClock(b.LinkWall))
+	}
+	if b.Floor > 0 {
+		parts = append(parts, "floor "+formatDiagnoseWallClock(b.Floor)+"/iter")
+	}
+	if b.SavedEstimate > 0 {
+		parts = append(parts, "saved ~"+formatDiagnoseWallClock(b.SavedEstimate))
+	}
+	return strings.Join(parts, " · ")
+}
+
 func overallScopeAndWallLine(rep *Report) string {
 	if rep == nil || rep.Summary == nil || rep.Summary.DistinctNamedTests == 0 {
 		return ""
