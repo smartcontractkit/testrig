@@ -54,6 +54,24 @@ func TestTestTimeoutFromFlags(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestNewPrebuiltExecutorBenchSerial(t *testing.T) {
+	t.Parallel()
+
+	bench := newPrebuiltExecutor(
+		gobuild.BuildPlan{P: 8, TestFlags: []string{"-test.bench=.", "-test.count=1"}},
+		nil,
+		nil,
+	)
+	assert.Equal(t, 1, bench.p, "cmd/go runs benchmark binaries one at a time")
+
+	plain := newPrebuiltExecutor(
+		gobuild.BuildPlan{P: 8, TestFlags: []string{"-test.run=TestX"}},
+		nil,
+		nil,
+	)
+	assert.Equal(t, 8, plain.p)
+}
+
 func TestHasBenchOrFuzz(t *testing.T) {
 	t.Parallel()
 

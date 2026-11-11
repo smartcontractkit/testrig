@@ -43,7 +43,7 @@ them as clock strings. A report written before the build phase has no `build` ke
 | `binaries` | int | Test binaries written by the link step. |
 | `external_link` | int | Binaries likely to link against non-standard cgo dependencies. Heuristic. |
 | `stripped` | bool | Whether the link step added `-ldflags=-s -w`. |
-| `floor` | duration | Compile and link overhead a `go test` iteration would pay. Equal to `link_wall`. |
+| `floor` | duration | Link and vet overhead a `go test` iteration would pay. Equal to `link_wall`. |
 | `saved_estimate` | duration | `floor × (iterations − 1)`. Omitted when zero. |
 
 In go-test mode only `mode` and `fallback_reason` are meaningful. The remaining fields keep their zero values, so

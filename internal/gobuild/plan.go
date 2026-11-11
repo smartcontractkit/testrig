@@ -4,6 +4,7 @@ package gobuild
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -97,10 +98,7 @@ func Plan(opts PlanOptions) (BuildPlan, error) {
 
 	beforeArgs, passthrough := splitAtArgs(opts.Args)
 	plan.Passthrough = passthrough
-	var testFlags []string
-	userSetCount := false
-	userSetTimeout := false
-	setP := false
+	state := planFlagState{plan: &plan, args: beforeArgs}
 
 	for i := 0; i < len(beforeArgs); i++ {
 		arg := beforeArgs[i]
@@ -113,89 +111,132 @@ func Plan(opts PlanOptions) (BuildPlan, error) {
 			plan.Patterns = append(plan.Patterns, arg)
 			continue
 		}
-		switch classifyFlag(name) {
-		case flagBuildBool:
-			plan.BuildFlags = append(plan.BuildFlags, arg)
-		case flagBuildValue:
-			val, next, err := consumeValue(beforeArgs, i, name, value, hasValue)
-			if err != nil {
-				return BuildPlan{}, err
-			}
-			i = next
-			if !hasValue {
-				plan.BuildFlags = append(plan.BuildFlags, arg, val)
-			} else {
-				plan.BuildFlags = append(plan.BuildFlags, arg)
-			}
-			if name == "-p" {
-				if n, err := strconv.Atoi(val); err == nil && n > 0 {
-					plan.P = n
-					setP = true
-				}
-			}
-		case flagTestBool:
-			if !hasValue {
-				value = "true"
-			}
-			testFlags = append(testFlags, "-test."+strings.TrimPrefix(name, "-")+"="+value)
-		case flagTestValue:
-			val, next, err := consumeValue(beforeArgs, i, name, value, hasValue)
-			if err != nil {
-				return BuildPlan{}, err
-			}
-			i = next
-			testFlags = append(testFlags, "-test."+strings.TrimPrefix(name, "-")+"="+val)
-			switch name {
-			case "-count":
-				userSetCount = true
-			case "-timeout":
-				userSetTimeout = true
-			}
-		case flagTestOptional:
-			if !hasValue {
-				value = "on"
-			}
-			testFlags = append(testFlags, "-test.shuffle="+value)
-		case flagVet:
-			val, next, err := consumeValue(beforeArgs, i, name, value, hasValue)
-			if err != nil {
-				return BuildPlan{}, err
-			}
-			i = next
-			plan.LinkFlags = append(plan.LinkFlags, "-vet="+val)
-		case flagIgnore:
-			// The harness supplies -json itself.
-		case flagFallback:
-			plan.Fallback = &Fallback{
-				Token:  strings.TrimPrefix(name, "-"),
-				Reason: name + " needs go test",
-			}
-			return plan, nil
-		default:
-			plan.Fallback = &Fallback{
-				Token:  sanitizeToken(strings.TrimPrefix(name, "-")),
-				Reason: "unknown flag " + name,
-			}
+		next, err := state.apply(i, arg, name, value, hasValue)
+		if err != nil {
+			return BuildPlan{}, err
+		}
+		i = next
+		if plan.Fallback != nil {
 			return plan, nil
 		}
 	}
 
-	if !setP {
+	if !state.setP {
 		plan.BuildFlags = append(plan.BuildFlags, "-p="+strconv.Itoa(plan.P))
 	}
 	injected := []string{"-test.paniconexit0", "-test.v=test2json"}
-	if !userSetTimeout {
+	if !state.userSetTimeout {
 		injected = append(injected, "-test.timeout="+defaultGoTestTimeout.String())
 	}
-	if !userSetCount {
+	if !state.userSetCount {
 		injected = append(injected, "-test.count=1")
+	}
+	if state.needOutputDir {
+		// The binary runs in its package directory, but go test writes
+		// artifacts to the go command's working directory.
+		outputDir := opts.ModuleDir
+		if abs, err := filepath.Abs(outputDir); err == nil {
+			outputDir = abs
+		}
+		injected = append(injected, "-test.outputdir="+outputDir)
 	}
 	// Injected flags come before user flags, like cmd/go, so an explicit -v
 	// (or -v=false) wins over the test2json default.
 	plan.TestFlags = append(plan.TestFlags, injected...)
-	plan.TestFlags = append(plan.TestFlags, testFlags...)
+	plan.TestFlags = append(plan.TestFlags, state.testFlags...)
 	plan.Strip = opts.Strip && !hasLDFlags(plan.BuildFlags) && !goflagsHasLDFlags(opts.GOFLAGS)
 	return plan, nil
+}
+
+// planFlagState accumulates the classification of one `go test` argument list.
+type planFlagState struct {
+	plan           *BuildPlan
+	args           []string
+	testFlags      []string
+	userSetCount   bool
+	userSetTimeout bool
+	needOutputDir  bool
+	setP           bool
+}
+
+// apply classifies one flag. It returns the index of the last argument it
+// consumed, because a value flag in split form also consumes the next argument.
+func (s *planFlagState) apply(i int, arg, name, value string, hasValue bool) (int, error) {
+	switch classifyFlag(name) {
+	case flagBuildBool:
+		s.plan.BuildFlags = append(s.plan.BuildFlags, arg)
+	case flagBuildValue:
+		val, next, err := consumeValue(s.args, i, name, value, hasValue)
+		if err != nil {
+			return i, err
+		}
+		i = next
+		if !hasValue {
+			s.plan.BuildFlags = append(s.plan.BuildFlags, arg, val)
+		} else {
+			s.plan.BuildFlags = append(s.plan.BuildFlags, arg)
+		}
+		if name == "-p" {
+			if n, err := strconv.Atoi(val); err == nil && n > 0 {
+				s.plan.P = n
+				s.setP = true
+			}
+		}
+	case flagTestBool:
+		if !hasValue {
+			value = "true"
+		}
+		s.testFlags = append(s.testFlags, "-test."+strings.TrimPrefix(name, "-")+"="+value)
+		// cmd/go injects -test.outputdir when -artifacts asks the binary to
+		// write files, because the binary otherwise uses its own working
+		// directory (the package dir) instead of the go command's.
+		if name == "-artifacts" && boolFlagEnabled(value) {
+			s.needOutputDir = true
+		}
+	case flagTestValue:
+		val, next, err := consumeValue(s.args, i, name, value, hasValue)
+		if err != nil {
+			return i, err
+		}
+		i = next
+		s.testFlags = append(s.testFlags, "-test."+strings.TrimPrefix(name, "-")+"="+val)
+		switch name {
+		case "-count":
+			s.userSetCount = true
+		case "-timeout":
+			s.userSetTimeout = true
+		}
+	case flagTestOptional:
+		if !hasValue {
+			value = "on"
+		}
+		s.testFlags = append(s.testFlags, "-test.shuffle="+value)
+	case flagVet:
+		val, next, err := consumeValue(s.args, i, name, value, hasValue)
+		if err != nil {
+			return i, err
+		}
+		i = next
+		s.plan.LinkFlags = append(s.plan.LinkFlags, "-vet="+val)
+	case flagIgnore:
+		// The harness supplies -json itself.
+	case flagFallback:
+		s.plan.Fallback = &Fallback{
+			Token:  strings.TrimPrefix(name, "-"),
+			Reason: name + " needs go test",
+		}
+	default:
+		s.plan.Fallback = &Fallback{
+			Token:  sanitizeToken(strings.TrimPrefix(name, "-")),
+			Reason: "unknown flag " + name,
+		}
+	}
+	return i, nil
+}
+
+func boolFlagEnabled(value string) bool {
+	enabled, err := strconv.ParseBool(value)
+	return err == nil && enabled
 }
 
 const defaultGoTestTimeout = 10 * time.Minute

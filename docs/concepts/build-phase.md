@@ -50,7 +50,9 @@ pattern.
 
 The plan also supplies the defaults `cmd/go` would supply: `-test.paniconexit0`, `-test.v=test2json`,
 `-test.timeout=10m0s` when the user did not set `-timeout`, and `-test.count=1` when the user did not set `-count`.
-The shuffle seed becomes `-test.shuffle` for each iteration.
+The shuffle seed becomes `-test.shuffle` for each iteration. When `-artifacts` is set, the plan also adds
+`-test.outputdir=<module dir>`, so artifacts land in the directory `go test` would use instead of each package's
+directory.
 
 The run falls back to go-test mode when it cannot honor an argument or environment:
 
@@ -101,7 +103,8 @@ counterfactual: it says what the run would have paid to link once per extra iter
 
 The prebuilt executor runs each test binary with its package directory as the working directory and the worker's
 resource environment. At most `P` binaries run at once: the user's `-p` when set, otherwise `runtime.GOMAXPROCS(0)`,
-the same limit `go test` uses.
+the same limit `go test` uses. With `-bench` set, it runs one binary at a time, as `go test` does, so benchmark timings
+are not changed by contention from other test binaries.
 
 Each binary's stdout and stderr go through a vendored copy of `cmd/internal/test2json`, so the result log has the same
 event shape as `go test -json`. Events stay in per-package buffers and flush together when a package finishes.

@@ -1,6 +1,7 @@
 package gobuild
 
 import (
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -299,6 +300,44 @@ func TestPlanStrip(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, plan.Strip)
 		})
+	}
+}
+
+func TestPlanArtifactsOutputDir(t *testing.T) {
+	t.Parallel()
+
+	moduleDir := t.TempDir()
+	plan, err := Plan(PlanOptions{
+		ModuleDir: moduleDir,
+		Args:      []string{"-artifacts", "./pkg"},
+		BuildOnce: true,
+	})
+	require.NoError(t, err)
+	require.Nil(t, plan.Fallback)
+	assert.Contains(t, plan.TestFlags, "-test.artifacts=true")
+
+	abs, err := filepath.Abs(moduleDir)
+	require.NoError(t, err)
+	assert.Contains(
+		t,
+		plan.TestFlags,
+		"-test.outputdir="+abs,
+		"artifacts need the go command's working directory, like cmd/go",
+	)
+}
+
+func TestPlanArtifactsOffNeedsNoOutputDir(t *testing.T) {
+	t.Parallel()
+
+	plan, err := Plan(PlanOptions{
+		ModuleDir: t.TempDir(),
+		Args:      []string{"-artifacts=false", "./pkg"},
+		BuildOnce: true,
+	})
+	require.NoError(t, err)
+	require.Nil(t, plan.Fallback)
+	for _, flag := range plan.TestFlags {
+		assert.NotContains(t, flag, "-test.outputdir=")
 	}
 }
 

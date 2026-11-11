@@ -7,7 +7,8 @@
 - Added the `iterationExecutor` seam (`Run(ctx, iterationRun, io.Writer)`) and moved the old `go test -json` process
   handling into `goTestExecutor`. `diagnoseIteration` now owns only the results file, buffering, and progress UI.
 - Added `prebuiltExecutor`:
-  - Runs at most `P` binaries at once (`-p` when set, else `runtime.GOMAXPROCS(0)`).
+  - Runs at most `P` binaries at once (`-p` when set, else `runtime.GOMAXPROCS(0)`). With `-bench` set it runs one at
+    a time, as `cmd/go` does.
   - Runs each binary in its package directory with `PWD` set and `os.Environ()` plus the resource env.
   - Applies the translated `-test.*` flags, with a non-zero harness shuffle seed replacing any user `-test.shuffle`.
   - Writes the `ok` / `FAIL` finish line and lets the converter emit the final package event with `Elapsed`.
@@ -16,8 +17,8 @@
   - Emits `start` / `?   pkg [no test files]` / `skip` events for packages with no test files, without a process.
   - Buffers events per package and flushes each finished package under one lock, including on cancel.
   - Interrupts the process group on `runCtx` cancel, waits 5s, then kills it.
-- Added process-group interrupt and kill helpers in `diagnose_process_{unix,other}.go`; `goTestExecutor` uses the same
-  helpers so cancel behavior is shared.
+- Added process-group isolate, interrupt, and kill helpers in `internal/procgroup`, shared by `gobuild.runGo` and the
+  runner executors so cancel behavior cannot drift between them.
 - Turned `--build-once` on by default. `--build-once=false` still records `Mode: "go-test"` and reason
   `--build-once=false`, and prints the notice, summary line, and AI token.
 - Added `--strip-binaries` (default `true`) and threaded it through `config.App` to `gobuild.Plan.Strip`. A user
@@ -67,8 +68,10 @@
   timeout.
 - Cancel during compile or link is still tested at the build-phase level, not through a full `RunIterations` call.
   `TestPrebuiltCancelMidIteration` covers cancel during an iteration only.
-- The equivalence suite does not cover bench, fuzz, `-cover`, or `-exec`, because those fall back to go-test mode by
-  design. It also does not compare stdout ordering between packages, only per-package event sets and test run order.
+- The equivalence suite does not cover bench, fuzz, `-cover`, or `-exec`. Fuzz, `-cover`, and `-exec` fall back to
+  go-test mode by design; bench runs prebuilt and is covered by `TestNewPrebuiltExecutorBenchSerial`, but it has no
+  end-to-end equivalence scenario. It also does not compare stdout ordering between packages, only per-package event
+  sets and test run order.
 - The race fixture depends on the race detector being available on the host; the test is skipped only by `-short`, not
   by race support.
 - The hooks-change-sources caveat and the temp-dir location are still undocumented. Both are phase 3 docs work.
@@ -101,11 +104,12 @@
 - `internal/gobuild/compile.go`
 - `internal/gobuild/plan.go`
 - `internal/gobuild/plan_test.go`
+- `internal/procgroup/doc.go`
+- `internal/procgroup/procgroup_other.go`
+- `internal/procgroup/procgroup_unix.go`
 - `internal/runner/diagnose_build.go`
 - `internal/runner/diagnose_build_failure_test.go`
 - `internal/runner/diagnose_build_test.go`
-- `internal/runner/diagnose_process_other.go`
-- `internal/runner/diagnose_process_unix.go`
 - `internal/runner/go_test_executor.go`
 - `internal/runner/iteration_executor.go`
 - `internal/runner/prebuilt_cancel_test.go`

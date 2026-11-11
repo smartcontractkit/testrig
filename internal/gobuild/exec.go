@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/smartcontractkit/testrig/internal/procgroup"
 )
 
 // runGo runs a go command with the caller's environment. Cancellation sends an
@@ -17,8 +19,8 @@ func runGo(ctx context.Context, dir string, args []string, stdout, stderr io.Wri
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.Env = os.Environ()
-	isolateProcessGroup(cmd)
-	cmd.Cancel = func() error { return interruptProcessGroup(cmd) }
+	procgroup.Isolate(cmd)
+	cmd.Cancel = func() error { return procgroup.Interrupt(cmd) }
 	cmd.WaitDelay = 5 * time.Second
 	return cmd.Run()
 }

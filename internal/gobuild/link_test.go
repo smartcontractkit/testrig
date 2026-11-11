@@ -32,6 +32,25 @@ func TestGroupPackagesAvoidsNameCollisions(t *testing.T) {
 		{ImportPath: "example.com/b/util", Name: "beta", BinaryName: "util"},
 	})
 	assert.Len(t, groups, 2)
+
+	// A package with no BinaryName still gets its name from the import path,
+	// not the package clause.
+	groups = groupPackages([]Package{
+		{ImportPath: "example.com/a/foo", Name: "bar"},
+		{ImportPath: "example.com/b/foo", Name: "baz"},
+	})
+	assert.Len(t, groups, 2)
+}
+
+func TestPackageBinaryNameUsesImportPath(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "foo", packageBinaryName(Package{ImportPath: "example.com/a/foo", Name: "bar"}))
+	assert.Equal(
+		t,
+		"name",
+		packageBinaryName(Package{ImportPath: "example.com/a/foo", BinaryName: "name", Name: "bar"}),
+	)
 }
 
 func TestLinkNameCollisionFixture(t *testing.T) {

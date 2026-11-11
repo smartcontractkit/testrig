@@ -151,9 +151,6 @@ func packageBinaryName(pkg Package) string {
 	if pkg.BinaryName != "" {
 		return pkg.BinaryName
 	}
-	if pkg.Name != "" {
-		return pkg.Name
-	}
 	return testBinaryName(pkg.ImportPath)
 }
 

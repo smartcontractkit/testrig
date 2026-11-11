@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/smartcontractkit/testrig/internal/gobuild"
+	"github.com/smartcontractkit/testrig/internal/procgroup"
 	"github.com/smartcontractkit/testrig/internal/test2json"
 )
 
@@ -50,6 +51,11 @@ func newPrebuiltExecutor(
 		testFlags:      append([]string(nil), plan.TestFlags...),
 		passthrough:    append([]string(nil), plan.Passthrough...),
 		p:              max(plan.P, 1),
+	}
+	// cmd/go forces benchmarks to run one package at a time, so timings do not
+	// depend on contention from other benchmark binaries.
+	if hasBench(e.testFlags) {
+		e.p = 1
 	}
 	if timeout, ok := testTimeoutFromFlags(e.testFlags); ok && timeout > 0 && !hasBenchOrFuzz(e.testFlags) {
 		e.killTimeout = testKillTimeout(timeout)
@@ -165,7 +171,7 @@ func (e *prebuiltExecutor) runBinary(
 	cmd.Stdout = output
 	cmd.Stderr = output
 	cmd.WaitDelay = prebuiltCancelGrace
-	isolateDiagnoseChildProcessGroup(cmd)
+	procgroup.Isolate(cmd)
 
 	start := time.Now()
 	killedTooLong, runErr := runPrebuiltCommand(ctx, cmd, e.killTimeout)
@@ -226,10 +232,10 @@ func runPrebuiltCommand(
 	case err := <-done:
 		return false, err
 	case <-ctx.Done():
-		_ = interruptDiagnoseChildProcessGroup(cmd)
+		_ = procgroup.Interrupt(cmd)
 		return false, waitForPrebuiltExit(cmd, done)
 	case <-timeoutC:
-		_ = killDiagnoseChildProcessGroup(cmd)
+		_ = procgroup.Kill(cmd)
 		return true, <-done
 	}
 }
@@ -243,7 +249,7 @@ func waitForPrebuiltExit(cmd *exec.Cmd, done <-chan error) error {
 	case err := <-done:
 		return err
 	case <-timer.C:
-		_ = killDiagnoseChildProcessGroup(cmd)
+		_ = procgroup.Kill(cmd)
 		return <-done
 	}
 }
@@ -309,12 +315,26 @@ func testTimeoutFromFlags(flags []string) (time.Duration, bool) {
 	return timeout, true
 }
 
+// hasBench reports whether the binary will run benchmarks. cmd/go forces
+// benchmarks to run one package at a time, so the executor set P to 1 when
+// this returns true. An empty -test.bench value runs nothing, as in cmd/go.
+func hasBench(flags []string) bool {
+	for _, flag := range flags {
+		if value, ok := strings.CutPrefix(flag, "-test.bench="); ok && value != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // hasBenchOrFuzz reports whether the binary may run past -test.timeout, which
 // disables cmd/go's backup kill deadline.
 func hasBenchOrFuzz(flags []string) bool {
+	if hasBench(flags) {
+		return true
+	}
 	for _, flag := range flags {
-		if strings.HasPrefix(flag, "-test.bench=") ||
-			strings.HasPrefix(flag, "-test.fuzz=") ||
+		if strings.HasPrefix(flag, "-test.fuzz=") ||
 			strings.HasPrefix(flag, "-test.fuzztime=") {
 			return true
 		}
