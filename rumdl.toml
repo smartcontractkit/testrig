@@ -1,0 +1,18 @@
+# Markdown rules shared by good-vibes and the projects it scaffolds.
+#
+# Run `rumdl check .` before commit, or `rumdl fmt .` to fix what it can.
+# The same file is embedded at internal/templates/files/rumdl.toml and written
+# by `good-vibes init`; a test keeps the two copies identical.
+
+[global]
+line-length = 120
+disable = ["MD041"]
+
+[MD013]
+line-length = 120
+reflow = true
+reflow-mode = "normalize"
+
+[MD025]
+# Docs and changes repeat the title in front matter and as the body H1.
+front-matter-title = ""
