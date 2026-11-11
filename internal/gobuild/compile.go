@@ -33,7 +33,10 @@ type Package struct {
 // CompileResult describes the `go list -export -test -deps` step.
 type CompileResult struct {
 	Packages []Package
-	Wall     time.Duration
+	// NoTestPackages are pattern-matched packages with no test files. They get
+	// go test -json events without a test binary.
+	NoTestPackages []Package
+	Wall           time.Duration
 
 	CompileActions int
 	CompileCached  int
@@ -82,7 +85,7 @@ func Compile(ctx context.Context, plan BuildPlan) (*CompileResult, error) {
 	}
 	wall := time.Since(start)
 
-	packages, err := parseListPackages(stdout.Bytes())
+	packages, noTestPackages, err := parseListPackages(stdout.Bytes())
 	if err != nil {
 		output := stderr.String()
 		if strings.TrimSpace(output) == "" {
@@ -93,9 +96,10 @@ func Compile(ctx context.Context, plan BuildPlan) (*CompileResult, error) {
 
 	stats, graphErr := ParseActionGraph(graphPath)
 	result := &CompileResult{
-		Packages: packages,
-		Wall:     wall,
-		GraphOK:  graphErr == nil,
+		Packages:       packages,
+		NoTestPackages: noTestPackages,
+		Wall:           wall,
+		GraphOK:        graphErr == nil,
 	}
 	if graphErr == nil {
 		result.CompileActions = stats.CompileActions
@@ -141,7 +145,7 @@ func (e *listError) String() string {
 	return pos + ": " + e.Err
 }
 
-func parseListPackages(raw []byte) ([]Package, error) {
+func parseListPackages(raw []byte) (testPackages, noTestPackages []Package, err error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	var all []listPackage
 	var listErrs []string
@@ -152,7 +156,7 @@ func parseListPackages(raw []byte) ([]Package, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("parse go list output: %w", err)
+			return nil, nil, fmt.Errorf("parse go list output: %w", err)
 		}
 		all = append(all, lp)
 		if lp.Error != nil {
@@ -163,7 +167,7 @@ func parseListPackages(raw []byte) ([]Package, error) {
 		}
 	}
 	if len(listErrs) > 0 {
-		return nil, errors.New(strings.Join(listErrs, "\n"))
+		return nil, nil, errors.New(strings.Join(listErrs, "\n"))
 	}
 
 	cgo := make(map[string]bool, len(all))
@@ -180,7 +184,14 @@ func parseListPackages(raw []byte) ([]Package, error) {
 		if len(lp.Match) == 0 || lp.ForTest != "" {
 			continue
 		}
+		pkg := Package{
+			ImportPath: lp.ImportPath,
+			Name:       lp.Name,
+			BinaryName: testBinaryName(lp.ImportPath),
+			Dir:        lp.Dir,
+		}
 		if len(lp.TestGoFiles) == 0 && len(lp.XTestGoFiles) == 0 {
+			noTestPackages = append(noTestPackages, pkg)
 			continue
 		}
 		deps := testVariantDeps[lp.ImportPath]
@@ -188,16 +199,16 @@ func parseListPackages(raw []byte) ([]Package, error) {
 			deps = append(deps, lp.TestImports...)
 			deps = append(deps, lp.XTestImports...)
 		}
-		pkgs = append(pkgs, Package{
-			ImportPath:   lp.ImportPath,
-			Name:         lp.Name,
-			BinaryName:   testBinaryName(lp.ImportPath),
-			Dir:          lp.Dir,
-			ExternalLink: hasExternalCgoDeps(deps, cgo),
-		})
+		pkg.ExternalLink = hasExternalCgoDeps(deps, cgo)
+		pkgs = append(pkgs, pkg)
 	}
+	sortPackages(pkgs)
+	sortPackages(noTestPackages)
+	return pkgs, noTestPackages, nil
+}
+
+func sortPackages(pkgs []Package) {
 	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].ImportPath < pkgs[j].ImportPath })
-	return pkgs, nil
 }
 
 var stdlibCgoAllow = map[string]bool{

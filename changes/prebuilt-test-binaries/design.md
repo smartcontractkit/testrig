@@ -444,7 +444,7 @@ workers, reports, and compare needs deep reasoning across several packages)
 
 ### Phase 2: Run prebuilt binaries
 
-- [ ] Vendor `cmd/internal/test2json` into `internal/test2json` with its license. Add the `iterationExecutor` seam, move
+- [x] Vendor `cmd/internal/test2json` into `internal/test2json` with its license. Add the `iterationExecutor` seam, move
       today's code into `goTestExecutor`, and add `prebuiltExecutor`: `-p` scheduling, package dir and `PWD`, env,
       test-flag translation and defaults, finish lines, timeout kill, no-test-files events, per-package buffering, and
       process-group cancel. Land the full equivalence suite with it.

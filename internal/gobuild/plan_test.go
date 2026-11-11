@@ -2,6 +2,7 @@ package gobuild
 
 import (
 	"runtime"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -147,6 +148,12 @@ func TestPlanBuildAndTestFlags(t *testing.T) {
 	assert.Contains(t, plan.TestFlags, "-test.run=TestX")
 	assert.Contains(t, plan.TestFlags, "-test.v=true")
 	assert.Contains(t, plan.TestFlags, "-test.v=test2json")
+	assert.Less(
+		t,
+		slices.Index(plan.TestFlags, "-test.v=test2json"),
+		slices.Index(plan.TestFlags, "-test.v=true"),
+		"user -v must come after the injected test2json default, like cmd/go",
+	)
 	assert.Contains(t, plan.TestFlags, "-test.count=3")
 	assert.Contains(t, plan.TestFlags, "-test.timeout=2m")
 	assert.Contains(t, plan.TestFlags, "-test.shuffle=42")

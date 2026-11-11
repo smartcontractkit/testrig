@@ -20,7 +20,7 @@ func TestRunDiagnoseBuildPhaseFallbacks(t *testing.T) {
 	t.Parallel()
 
 	out := output.NewForTest(true, io.Discard, io.Discard, false)
-	metrics, binDir, err := runDiagnoseBuildPhase(
+	result, err := runDiagnoseBuildPhase(
 		context.Background(),
 		&config.App{BuildOnce: false},
 		out,
@@ -30,12 +30,13 @@ func TestRunDiagnoseBuildPhaseFallbacks(t *testing.T) {
 		nil,
 	)
 	require.NoError(t, err)
-	require.NotNil(t, metrics)
-	assert.Equal(t, buildModeGoTest, metrics.Mode)
-	assert.Equal(t, "--build-once=false", metrics.FallbackReason)
-	assert.Empty(t, binDir)
+	require.NotNil(t, result.Metrics)
+	assert.Equal(t, buildModeGoTest, result.Metrics.Mode)
+	assert.Equal(t, "--build-once=false", result.Metrics.FallbackReason)
+	assert.Empty(t, result.BinDir)
+	assert.Nil(t, result.Executor)
 
-	metrics, binDir, err = runDiagnoseBuildPhase(
+	result, err = runDiagnoseBuildPhase(
 		context.Background(),
 		&config.App{BuildOnce: true},
 		out,
@@ -45,10 +46,11 @@ func TestRunDiagnoseBuildPhaseFallbacks(t *testing.T) {
 		nil,
 	)
 	require.NoError(t, err)
-	require.NotNil(t, metrics)
-	assert.Equal(t, buildModeGoTest, metrics.Mode)
-	assert.Contains(t, metrics.FallbackReason, "-coverprofile needs go test")
-	assert.Empty(t, binDir)
+	require.NotNil(t, result.Metrics)
+	assert.Equal(t, buildModeGoTest, result.Metrics.Mode)
+	assert.Contains(t, result.Metrics.FallbackReason, "-coverprofile needs go test")
+	assert.Empty(t, result.BinDir)
+	assert.Nil(t, result.Executor)
 }
 
 func TestPrintBuildLines(t *testing.T) {

@@ -28,9 +28,27 @@ func defaultBuildPhaseOps() buildPhaseOps {
 	return buildPhaseOps{compile: gobuild.Compile, link: gobuild.Link}
 }
 
+// buildPhaseResult is the outcome of the optional compile and link step.
+// Metrics is always set so report.json records the mode. Executor is non-nil
+// only when prebuilt binaries are ready; otherwise iterations use go test.
+type buildPhaseResult struct {
+	Metrics  *BuildMetrics
+	BinDir   string
+	Executor iterationExecutor
+}
+
+// executorFor returns the run's executor. Without prebuilt binaries, iterations
+// use today's go test path.
+func (r buildPhaseResult) executorFor(moduleDir string, goTestArgs []string) iterationExecutor {
+	if r.Executor != nil {
+		return r.Executor
+	}
+	return &goTestExecutor{moduleDir: moduleDir, goTestArgs: goTestArgs}
+}
+
 // runDiagnoseBuildPhase compiles and links test binaries once when configured.
 // It returns metrics even in go-test mode so report.json records why the run
-// fell back. A non-empty binDir must be removed by the caller when the run ends.
+// fell back. A non-empty BinDir must be removed by the caller when the run ends.
 func runDiagnoseBuildPhase(
 	ctx context.Context,
 	conf *config.App,
@@ -39,7 +57,7 @@ func runDiagnoseBuildPhase(
 	moduleDir string,
 	goTestArgs []string,
 	resources []diagnoseIterationResource,
-) (metrics *BuildMetrics, binDir string, err error) {
+) (buildPhaseResult, error) {
 	return runDiagnoseBuildPhaseWithOps(
 		ctx,
 		conf,
@@ -61,15 +79,15 @@ func runDiagnoseBuildPhaseWithOps(
 	goTestArgs []string,
 	resources []diagnoseIterationResource,
 	ops buildPhaseOps,
-) (metrics *BuildMetrics, binDir string, err error) {
+) (buildPhaseResult, error) {
 	if conf == nil || !conf.BuildOnce {
-		return &BuildMetrics{
+		return buildPhaseResult{Metrics: &BuildMetrics{
 			Mode:           buildModeGoTest,
 			FallbackReason: "--build-once=false",
-		}, "", nil
+		}}, nil
 	}
 	if ctx.Err() != nil {
-		return nil, "", ctx.Err()
+		return buildPhaseResult{}, ctx.Err()
 	}
 
 	plan, err := gobuild.Plan(gobuild.PlanOptions{
@@ -81,21 +99,21 @@ func runDiagnoseBuildPhaseWithOps(
 		Strip:       true,
 	})
 	if err != nil {
-		return nil, "", err
+		return buildPhaseResult{}, err
 	}
 	if plan.Fallback != nil {
-		return &BuildMetrics{
+		return buildPhaseResult{Metrics: &BuildMetrics{
 			Mode:           buildModeGoTest,
 			FallbackReason: plan.Fallback.Reason,
-		}, "", nil
+		}}, nil
 	}
 
 	progress := newBuildProgress(out)
 	progress.begin()
 
-	binDir, err = os.MkdirTemp("", "testrig-bin-")
+	binDir, err := os.MkdirTemp("", "testrig-bin-")
 	if err != nil {
-		return nil, "", err
+		return buildPhaseResult{}, err
 	}
 	success := false
 	defer func() {
@@ -109,11 +127,11 @@ func runDiagnoseBuildPhaseWithOps(
 	compiled, err := ops.compile(ctx, plan)
 	if err != nil {
 		finishBuildStep(ctx, finishCompile, resultsDir, err)
-		return nil, binDir, fmt.Errorf("build test binaries: %w", err)
+		return buildPhaseResult{BinDir: binDir}, fmt.Errorf("build test binaries: %w", err)
 	}
 	finishCompile(buildStepOK)
 
-	metrics = &BuildMetrics{
+	metrics := &BuildMetrics{
 		Mode:           buildModePrebuilt,
 		Cache:          gobuild.CacheUnknown,
 		CompileActions: compiled.CompileActions,
@@ -136,7 +154,7 @@ func runDiagnoseBuildPhaseWithOps(
 	linked, err := ops.link(ctx, plan, compiled.Packages)
 	if err != nil {
 		finishBuildStep(ctx, finishLink, resultsDir, err)
-		return nil, binDir, fmt.Errorf("build test binaries: %w", err)
+		return buildPhaseResult{BinDir: binDir}, fmt.Errorf("build test binaries: %w", err)
 	}
 	finishLink(buildStepOK)
 	metrics.LinkWall = linked.Metrics.LinkWall
@@ -152,7 +170,11 @@ func runDiagnoseBuildPhaseWithOps(
 	printBuildFloor(out, metrics, conf.Iterations)
 
 	success = true
-	return metrics, binDir, nil
+	return buildPhaseResult{
+		Metrics:  metrics,
+		BinDir:   binDir,
+		Executor: newPrebuiltExecutor(plan, linked.Binaries, compiled.NoTestPackages),
+	}, nil
 }
 
 // finishBuildStep renders the failed or stopped line and, for a build failure,

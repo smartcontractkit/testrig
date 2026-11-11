@@ -16,3 +16,20 @@ func isolateDiagnoseChildProcessGroup(cmd *exec.Cmd) {
 	}
 	cmd.SysProcAttr.Setpgid = true
 }
+
+// interruptDiagnoseChildProcessGroup sends SIGINT to a child's whole process
+// group, so a test binary and its descendants get the chance to flush output.
+func interruptDiagnoseChildProcessGroup(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	return syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
+}
+
+// killDiagnoseChildProcessGroup force-kills a child's whole process group.
+func killDiagnoseChildProcessGroup(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}

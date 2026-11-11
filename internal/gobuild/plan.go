@@ -97,6 +97,7 @@ func Plan(opts PlanOptions) (BuildPlan, error) {
 
 	beforeArgs, passthrough := splitAtArgs(opts.Args)
 	plan.Passthrough = passthrough
+	var testFlags []string
 	userSetCount := false
 	userSetTimeout := false
 	setP := false
@@ -136,14 +137,14 @@ func Plan(opts PlanOptions) (BuildPlan, error) {
 			if !hasValue {
 				value = "true"
 			}
-			plan.TestFlags = append(plan.TestFlags, "-test."+strings.TrimPrefix(name, "-")+"="+value)
+			testFlags = append(testFlags, "-test."+strings.TrimPrefix(name, "-")+"="+value)
 		case flagTestValue:
 			val, next, err := consumeValue(beforeArgs, i, name, value, hasValue)
 			if err != nil {
 				return BuildPlan{}, err
 			}
 			i = next
-			plan.TestFlags = append(plan.TestFlags, "-test."+strings.TrimPrefix(name, "-")+"="+val)
+			testFlags = append(testFlags, "-test."+strings.TrimPrefix(name, "-")+"="+val)
 			switch name {
 			case "-count":
 				userSetCount = true
@@ -154,7 +155,7 @@ func Plan(opts PlanOptions) (BuildPlan, error) {
 			if !hasValue {
 				value = "on"
 			}
-			plan.TestFlags = append(plan.TestFlags, "-test.shuffle="+value)
+			testFlags = append(testFlags, "-test.shuffle="+value)
 		case flagVet:
 			val, next, err := consumeValue(beforeArgs, i, name, value, hasValue)
 			if err != nil {
@@ -182,14 +183,17 @@ func Plan(opts PlanOptions) (BuildPlan, error) {
 	if !setP {
 		plan.BuildFlags = append(plan.BuildFlags, "-p="+strconv.Itoa(plan.P))
 	}
-	plan.TestFlags = append(plan.TestFlags, "-test.paniconexit0")
-	plan.TestFlags = append(plan.TestFlags, "-test.v=test2json")
+	injected := []string{"-test.paniconexit0", "-test.v=test2json"}
 	if !userSetTimeout {
-		plan.TestFlags = append(plan.TestFlags, "-test.timeout="+defaultGoTestTimeout.String())
+		injected = append(injected, "-test.timeout="+defaultGoTestTimeout.String())
 	}
 	if !userSetCount {
-		plan.TestFlags = append(plan.TestFlags, "-test.count=1")
+		injected = append(injected, "-test.count=1")
 	}
+	// Injected flags come before user flags, like cmd/go, so an explicit -v
+	// (or -v=false) wins over the test2json default.
+	plan.TestFlags = append(plan.TestFlags, injected...)
+	plan.TestFlags = append(plan.TestFlags, testFlags...)
 	plan.Strip = opts.Strip && !hasLDFlags(plan.BuildFlags) && !goflagsHasLDFlags(opts.GOFLAGS)
 	return plan, nil
 }

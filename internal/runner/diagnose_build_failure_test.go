@@ -96,7 +96,7 @@ func TestBuildPhaseLinkFailureShowsCross(t *testing.T) {
 	var stderr strings.Builder
 	out := output.NewForTest(false, io.Discard, &stderr, false)
 	resultsDir := t.TempDir()
-	_, binDir, err := runDiagnoseBuildPhaseWithOps(
+	result, err := runDiagnoseBuildPhaseWithOps(
 		context.Background(),
 		&config.App{BuildOnce: true, Iterations: 2},
 		out,
@@ -120,7 +120,7 @@ func TestBuildPhaseLinkFailureShowsCross(t *testing.T) {
 	assert.Contains(t, string(logBytes), "linker exploded")
 	assert.Contains(t, string(logBytes), `"build-fail"`)
 
-	_, statErr := os.Stat(binDir)
+	_, statErr := os.Stat(result.BinDir)
 	assert.True(t, os.IsNotExist(statErr), "binary dir is removed on failure")
 }
 
@@ -165,7 +165,7 @@ func TestBuildPhaseCancelDuringLinkShowsStopped(t *testing.T) {
 		cancel()
 	}()
 
-	_, binDir, err := runDiagnoseBuildPhaseWithOps(
+	result, err := runDiagnoseBuildPhaseWithOps(
 		ctx,
 		&config.App{BuildOnce: true, Iterations: 2},
 		out,
@@ -183,7 +183,7 @@ func TestBuildPhaseCancelDuringLinkShowsStopped(t *testing.T) {
 	assert.Contains(t, plain, "stopped")
 	assert.NotContains(t, plain, "❌")
 
-	_, statErr := os.Stat(binDir)
+	_, statErr := os.Stat(result.BinDir)
 	assert.True(t, os.IsNotExist(statErr), "binary dir is removed on cancel")
 	_, logErr := os.Stat(filepath.Join(resultsDir, "build.log.jsonl"))
 	assert.True(t, os.IsNotExist(logErr), "a cancel is not a build failure")

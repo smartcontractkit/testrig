@@ -46,6 +46,7 @@ type diagnoseIterationParams struct {
 	ParallelProgress *parallelDiagnoseProgress
 	DiagnoseRunStart time.Time
 	SerialProgressMu *sync.Mutex
+	Executor         iterationExecutor
 }
 
 type diagnoseIterationRunner func(ctx context.Context, p diagnoseIterationParams) error
@@ -608,7 +609,7 @@ func runDiagnoseIterations(
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	buildMetrics, binDir, buildErr := runDiagnoseBuildPhase(
+	buildResult, buildErr := runDiagnoseBuildPhase(
 		runCtx,
 		conf,
 		out,
@@ -617,7 +618,8 @@ func runDiagnoseIterations(
 		adjustedArgs,
 		resources,
 	)
-	state.Build = buildMetrics
+	state.Build = buildResult.Metrics
+	binDir := buildResult.BinDir
 	if binDir != "" {
 		defer func() { _ = os.RemoveAll(binDir) }()
 	}
@@ -627,6 +629,7 @@ func runDiagnoseIterations(
 		}
 		return state, nil
 	}
+	executor := buildResult.executorFor(moduleDir, adjustedArgs)
 
 	if !out.AIOutput() {
 		printDiagnoseIterationTableHeader(out, tableOpts)
@@ -660,6 +663,7 @@ func runDiagnoseIterations(
 		goTestArgs:       adjustedArgs,
 		moduleDir:        moduleDir,
 		hooks:            hooks,
+		executor:         executor,
 		parallel:         parallel,
 		parallelProgress: parallelProgress,
 		diagnoseRunStart: diagnoseRunStart,
@@ -754,6 +758,7 @@ type diagnoseWorker struct {
 	goTestArgs       []string
 	moduleDir        string
 	hooks            diagnoseRunHooks
+	executor         iterationExecutor
 	parallel         int
 	parallelProgress *parallelDiagnoseProgress
 	diagnoseRunStart time.Time
@@ -818,6 +823,7 @@ func (w *diagnoseWorker) runIterationJob(
 		ParallelProgress: w.parallelProgress,
 		DiagnoseRunStart: w.diagnoseRunStart,
 		SerialProgressMu: w.serialProgressMu,
+		Executor:         w.executor,
 	})
 	iterDur := time.Since(iterStart)
 	if w.hooks.iterationTeardown != nil {
@@ -1463,10 +1469,13 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 	conf, out := p.Conf, p.Out
 	resultsDir := p.ResultsDir
 	iteration, shuffleSeed := p.Iteration, p.ShuffleSeed
-	env := p.Env
 	liveProgress, parallelProgress := p.LiveProgress, p.ParallelProgress
 	diagnoseRunStart, serialProgressMu := p.DiagnoseRunStart, p.SerialProgressMu
 	moduleDir, goTestArgs := p.ModuleDir, p.GoTestArgs
+	executor := p.Executor
+	if executor == nil {
+		executor = &goTestExecutor{moduleDir: moduleDir, goTestArgs: goTestArgs}
+	}
 
 	start := time.Now()
 	jsonPath := filepath.Join(resultsDir, fmt.Sprintf("iteration-%d.log.jsonl", iteration))
@@ -1485,26 +1494,15 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 		}
 	}()
 
-	args, err := buildDiagnoseArgs(goTestArgs, shuffleSeed)
-	if err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, "go", args...) //nolint:gosec // G204: user-controlled go test args by design
-	cmd.Dir = moduleDir
-	cmd.Stdin = os.Stdin
-	cmd.Env = append(os.Environ(), env...)
-	isolateDiagnoseChildProcessGroup(cmd)
-	// Soft-cancel on ctx cancellation so `go test -json` gets a chance to flush
-	// its final events before we escalate to SIGKILL after WaitDelay.
-	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
-	cmd.WaitDelay = 5 * time.Second
-
 	sw := &syncedWriter{w: bw}
-	cmd.Stdout = sw
-	cmd.Stderr = sw
+	run := iterationRun{
+		Iteration:   iteration,
+		ShuffleSeed: shuffleSeed,
+		Env:         p.Env,
+	}
 
 	if out.AIOutput() {
-		retErr = cmd.Run()
+		retErr = executor.Run(ctx, run, sw)
 		return retErr
 	}
 
@@ -1552,7 +1550,7 @@ func diagnoseIteration(ctx context.Context, p diagnoseIterationParams) error {
 		redraw()
 	}
 
-	retErr = cmd.Run()
+	retErr = executor.Run(ctx, run, sw)
 	close(tickDone)
 	tickWG.Wait()
 
