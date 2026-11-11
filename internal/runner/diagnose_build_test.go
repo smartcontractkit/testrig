@@ -25,6 +25,7 @@ func TestRunDiagnoseBuildPhaseFallbacks(t *testing.T) {
 		&config.App{BuildOnce: false},
 		out,
 		t.TempDir(),
+		t.TempDir(),
 		[]string{"./pkg"},
 		nil,
 	)
@@ -38,6 +39,7 @@ func TestRunDiagnoseBuildPhaseFallbacks(t *testing.T) {
 		context.Background(),
 		&config.App{BuildOnce: true},
 		out,
+		t.TempDir(),
 		t.TempDir(),
 		[]string{"-coverprofile=cover.out", "./pkg"},
 		nil,

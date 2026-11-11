@@ -71,13 +71,24 @@ func Compile(ctx context.Context, plan BuildPlan) (*CompileResult, error) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, &BuildError{Step: "compile", Output: combinedOutput(stderr.String(), stdout.String()), Err: err}
+		// `go list -json` writes partial JSON to stdout even when it fails.
+		// Keep the compiler diagnostics from stderr so build.log.jsonl and
+		// printBuildError show the error, not a package dump.
+		output := stderr.String()
+		if strings.TrimSpace(output) == "" {
+			output = stdout.String()
+		}
+		return nil, &BuildError{Step: "compile", Output: output, Err: err}
 	}
 	wall := time.Since(start)
 
 	packages, err := parseListPackages(stdout.Bytes())
 	if err != nil {
-		return nil, &BuildError{Step: "compile", Output: combinedOutput(stderr.String(), stdout.String()), Err: err}
+		output := stderr.String()
+		if strings.TrimSpace(output) == "" {
+			output = err.Error()
+		}
+		return nil, &BuildError{Step: "compile", Output: output, Err: err}
 	}
 
 	stats, graphErr := ParseActionGraph(graphPath)

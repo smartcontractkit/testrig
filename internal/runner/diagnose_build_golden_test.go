@@ -67,14 +67,14 @@ func TestBuildOutputGoldenLive(t *testing.T) {
 
 	progress.begin()
 	finish := progress.start("compiling", "compile started", nil)
-	finish()
+	finish(buildStepOK)
 	printBuildCompiled(out, metrics)
 	finish = progress.start(
 		"linking",
 		fmt.Sprintf("link started · %d test binaries", metrics.Binaries),
 		func() (int, int) { return 37, metrics.Binaries },
 	)
-	finish()
+	finish(buildStepOK)
 	printBuildLinked(out, metrics)
 	printBuildFloor(out, metrics, 20)
 
@@ -92,14 +92,14 @@ func TestBuildOutputGoldenNonTTY(t *testing.T) {
 
 	progress.begin()
 	finish := progress.start("compiling", "compile started", nil)
-	finish()
+	finish(buildStepOK)
 	printBuildCompiled(out, metrics)
 	finish = progress.start(
 		"linking",
 		fmt.Sprintf("link started · %d test binaries", metrics.Binaries),
 		func() (int, int) { return 0, metrics.Binaries },
 	)
-	finish()
+	finish(buildStepOK)
 	printBuildLinked(out, metrics)
 	printBuildFloor(out, metrics, 20)
 
@@ -117,14 +117,14 @@ func TestBuildOutputGoldenAI(t *testing.T) {
 
 	progress.begin()
 	finish := progress.start("compiling", "compile started", nil)
-	finish()
+	finish(buildStepOK)
 	printBuildCompiled(out, metrics)
 	finish = progress.start(
 		"linking",
 		fmt.Sprintf("link started · %d test binaries", metrics.Binaries),
 		func() (int, int) { return 0, metrics.Binaries },
 	)
-	finish()
+	finish(buildStepOK)
 	printBuildLinked(out, metrics)
 	printBuildFloor(out, metrics, 20)
 

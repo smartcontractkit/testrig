@@ -37,8 +37,10 @@ Invariants this change must keep:
 
 Toolchain facts checked on Go 1.27.3:
 
-- `go test -c -o <dir>/ <patterns>` builds many packages in one call and names binaries `<pkgname>.test`. It fails with
-  `cannot write test binary util.test for multiple packages` when two packages share a name. Packages with no test files
+- `go test -c -o <dir>/ <patterns>` builds many packages in one call and names binaries after the last import path
+  element, not the package clause (`a/foo` with `package bar` writes `foo.test`). It fails with
+  `cannot write test binary util.test for multiple packages` when two packages share that element, such as `a/util` and
+  `b/util`. Packages with no test files
   produce no binary. It runs vet like `go test` does.
 - `go list -export -test -deps` compiles every package and test variant into the build cache without linking test
   binaries.
@@ -161,7 +163,8 @@ Test-flag defaults copy `cmd/go`:
 keeps, for each pattern-matched package with tests: `ImportPath`, `Name`, `Dir`, whether it has test files, and whether
 any dep in its test binary has `CgoFiles`. Compile errors (`Error`, `DepsErrors`) become a build failure.
 
-`Link` groups packages so no group has two packages with the same `Name`. It runs one `go test -c -o <bindir>/<g>/` per
+`Link` groups packages so no group has two packages with the same binary base name, the last import path element that
+`go test -c -o <dir>/` uses. It runs one `go test -c -o <bindir>/<g>/` per
 group, sequentially, with the same build flags. Each group gets its own actiongraph file. When the user did not set
 `-ldflags` in args or `GOFLAGS`, it adds `-ldflags=-s -w`. A user `-ldflags` turns stripping off instead of merging, so
 we never override user link flags.
@@ -411,8 +414,9 @@ Other checks:
   mismatch shows up when compared against a go-test run.
 - **Hidden `-debug-actiongraph` flag.** A Go release could change or drop it. Metrics then degrade to wall times and
   `cache: unknown`. A test against the toolchain in `go.mod` catches the change.
-- **Disk use.** Hundreds of test binaries can use many GB in the temp dir. Stripping helps. A failed or killed run can
-  leave the dir behind; the `testrig-bin-` prefix makes it easy to find, and the docs say where it lives.
+- **Disk use.** Hundreds of test binaries can use many GB in the temp dir. Stripping helps. Successful, failed, and
+  canceled runs remove the dir; a crash or SIGKILL can leave it behind, and the `testrig-bin-` prefix makes it easy to
+  find. The docs say where it lives.
 - **Hooks that change sources mid-run.** They break prebuilt mode silently. The docs name this, and the flag opts out.
 - **Memory with `P` binaries times parallel iterations.** This is unchanged from today, where each `go test` already
   runs `-p` binaries. The link step now runs once instead of in every worker, so peak memory should drop.
@@ -433,7 +437,7 @@ workers, reports, and compare needs deep reasoning across several packages)
 - [x] Add the `buildProgress` helper and the build output from "Terminal output": live and non-TTY step lines, the
       `[n/total]` link count from the bin dir, the floor line, the summary build line, and the `--ai-output` tokens.
       Include golden tests for live, non-TTY, and AI output, with styles checked through the existing test printer.
-- [ ] Move build failures to the build phase when `--build-once` is on: write `build.log.jsonl`, fail fast with
+- [x] Move build failures to the build phase when `--build-once` is on: write `build.log.jsonl`, fail fast with
       `build-failure` before iteration 0, and point `printBuildError` at the new file. Show `❌` on the failed step and
       `stopped` on interrupt. Include the compile-error fixture and the cancel-during-link test, both checking the
       printed lines.

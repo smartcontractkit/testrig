@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -15,6 +17,17 @@ import (
 	"github.com/smartcontractkit/testrig/internal/termstyle"
 )
 
+// buildPhaseOps are the compile and link entry points. Tests inject fakes to
+// control step timing, such as canceling during the link step.
+type buildPhaseOps struct {
+	compile func(context.Context, gobuild.BuildPlan) (*gobuild.CompileResult, error)
+	link    func(context.Context, gobuild.BuildPlan, []gobuild.Package) (*gobuild.Build, error)
+}
+
+func defaultBuildPhaseOps() buildPhaseOps {
+	return buildPhaseOps{compile: gobuild.Compile, link: gobuild.Link}
+}
+
 // runDiagnoseBuildPhase compiles and links test binaries once when configured.
 // It returns metrics even in go-test mode so report.json records why the run
 // fell back. A non-empty binDir must be removed by the caller when the run ends.
@@ -22,9 +35,32 @@ func runDiagnoseBuildPhase(
 	ctx context.Context,
 	conf *config.App,
 	out *output.Printer,
+	resultsDir string,
 	moduleDir string,
 	goTestArgs []string,
 	resources []diagnoseIterationResource,
+) (metrics *BuildMetrics, binDir string, err error) {
+	return runDiagnoseBuildPhaseWithOps(
+		ctx,
+		conf,
+		out,
+		resultsDir,
+		moduleDir,
+		goTestArgs,
+		resources,
+		defaultBuildPhaseOps(),
+	)
+}
+
+func runDiagnoseBuildPhaseWithOps(
+	ctx context.Context,
+	conf *config.App,
+	out *output.Printer,
+	resultsDir string,
+	moduleDir string,
+	goTestArgs []string,
+	resources []diagnoseIterationResource,
+	ops buildPhaseOps,
 ) (metrics *BuildMetrics, binDir string, err error) {
 	if conf == nil || !conf.BuildOnce {
 		return &BuildMetrics{
@@ -70,11 +106,12 @@ func runDiagnoseBuildPhase(
 	plan.BinDir = binDir
 
 	finishCompile := progress.start("compiling", "compile started", nil)
-	compiled, err := gobuild.Compile(ctx, plan)
-	finishCompile()
+	compiled, err := ops.compile(ctx, plan)
 	if err != nil {
+		finishBuildStep(ctx, finishCompile, resultsDir, err)
 		return nil, binDir, fmt.Errorf("build test binaries: %w", err)
 	}
+	finishCompile(buildStepOK)
 
 	metrics = &BuildMetrics{
 		Mode:           buildModePrebuilt,
@@ -96,11 +133,12 @@ func runDiagnoseBuildPhase(
 		fmt.Sprintf("link started · %d test binaries", linkTotal),
 		func() (int, int) { return countTestBinaries(binDir), linkTotal },
 	)
-	linked, err := gobuild.Link(ctx, plan, compiled.Packages)
-	finishLink()
+	linked, err := ops.link(ctx, plan, compiled.Packages)
 	if err != nil {
+		finishBuildStep(ctx, finishLink, resultsDir, err)
 		return nil, binDir, fmt.Errorf("build test binaries: %w", err)
 	}
+	finishLink(buildStepOK)
 	metrics.LinkWall = linked.Metrics.LinkWall
 	metrics.LinkTotal = linked.Metrics.LinkTotal
 	metrics.VetTotal = linked.Metrics.VetTotal
@@ -115,6 +153,91 @@ func runDiagnoseBuildPhase(
 
 	success = true
 	return metrics, binDir, nil
+}
+
+// finishBuildStep renders the failed or stopped line and, for a build failure,
+// records the go command output in build.log.jsonl so printBuildError can show
+// it. A canceled context means the step stopped; it is not a build failure.
+func finishBuildStep(
+	ctx context.Context,
+	finish func(buildStepOutcome),
+	resultsDir string,
+	err error,
+) {
+	if ctx.Err() != nil {
+		finish(buildStepStopped)
+		return
+	}
+	finish(buildStepFailed)
+	if buildErr, ok := errors.AsType[*gobuild.BuildError](err); ok {
+		writeBuildFailureLog(resultsDir, buildErr.Step, buildErr.Output)
+	}
+}
+
+// buildLogEvent mirrors the go test -json event shape for the build phase.
+type buildLogEvent struct {
+	Time        time.Time `json:"Time"`
+	Action      string    `json:"Action"`
+	Output      string    `json:"Output,omitempty"`
+	FailedBuild string    `json:"FailedBuild,omitempty"`
+}
+
+// writeBuildFailureLog writes build.log.jsonl as go test -json style
+// build-output and build-fail events. Build reporting never masks the failure.
+func writeBuildFailureLog(resultsDir, step, output string) {
+	if resultsDir == "" {
+		return
+	}
+	f, err := os.Create(filepath.Join(resultsDir, "build.log.jsonl")) //nolint:gosec // G304: results dir from caller
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	enc := json.NewEncoder(f)
+	for line := range strings.SplitSeq(output, "\n") {
+		if line == "" {
+			continue
+		}
+		_ = enc.Encode(buildLogEvent{Time: time.Now(), Action: "build-output", Output: line + "\n"})
+	}
+	_ = enc.Encode(buildLogEvent{Time: time.Now(), Action: "build-fail", FailedBuild: step})
+}
+
+// buildFailureStep returns the compile or link step from a build error, or an
+// empty string when the error did not come from a go build command.
+func buildFailureStep(err error) string {
+	if buildErr, ok := errors.AsType[*gobuild.BuildError](err); ok {
+		return buildErr.Step
+	}
+	return ""
+}
+
+// isBuildFailure reports whether err is a compile or link failure from the go
+// command, which diagnose treats as fail-fast.
+func isBuildFailure(err error) bool {
+	_, ok := errors.AsType[*gobuild.BuildError](err)
+	return ok
+}
+
+// handleBuildPhaseFailure records a compile or link failure on the run state.
+// No iteration has run, so the run stops before iteration 0 with the same
+// fail-fast reason go test would have produced. It returns false when err is a
+// cancel or another setup error and the caller should report it as-is.
+func handleBuildPhaseFailure(
+	ctx context.Context,
+	state *DiagnoseRunState,
+	resultsDir string,
+	err error,
+) bool {
+	if ctx.Err() != nil || !isBuildFailure(err) {
+		return false
+	}
+	state.failedFast = true
+	state.failedFastReason = failFastReasonBuildFailure
+	state.failedFastIteration = 0
+	state.buildLogPath = filepath.Join(resultsDir, "build.log.jsonl")
+	state.buildFailureStep = buildFailureStep(err)
+	return true
 }
 
 func flattenResourceEnv(resources []diagnoseIterationResource) []string {

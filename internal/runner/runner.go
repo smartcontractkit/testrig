@@ -65,6 +65,8 @@ type DiagnoseRunState struct {
 	failedFastIteration int // 0-based diagnose iteration index; -1 if unset
 	GracefulStop        bool
 	Build               *BuildMetrics `json:"build,omitempty"`
+	buildLogPath        string
+	buildFailureStep    string
 	iterDurations       []time.Duration
 	shuffleSeeds        map[int]int64
 	liveProgress        bool
@@ -161,9 +163,12 @@ func RunIterations(
 
 	if state.failedFast && state.failedFastReason == failFastReasonBuildFailure && state.failedFastIteration >= 0 &&
 		!state.GracefulStop {
-		if !out.AIOutput() {
-			printBuildError(out, resultsDir, state.failedFastIteration)
-		} else {
+		switch {
+		case !out.AIOutput():
+			printBuildError(out, state.buildErrorLogPath(resultsDir))
+		case state.buildFailureStep != "":
+			out.Stderrf("build_fail step=%s\n", state.buildFailureStep)
+		default:
 			out.Stderrf("bf_stop iter=%d pkgs=\n", state.failedFastIteration+1)
 		}
 		// When build fails fast, we stop completely and don't analyze
@@ -607,6 +612,7 @@ func runDiagnoseIterations(
 		runCtx,
 		conf,
 		out,
+		resultsDir,
 		moduleDir,
 		adjustedArgs,
 		resources,
@@ -616,7 +622,10 @@ func runDiagnoseIterations(
 		defer func() { _ = os.RemoveAll(binDir) }()
 	}
 	if buildErr != nil {
-		return state, buildErr
+		if !handleBuildPhaseFailure(runCtx, state, resultsDir, buildErr) {
+			return state, buildErr
+		}
+		return state, nil
 	}
 
 	if !out.AIOutput() {
@@ -1149,12 +1158,25 @@ func buildDiagnoseArgs(goTestArgs []string, shuffleSeed int64) ([]string, error)
 	return args, nil
 }
 
-func printBuildError(out *output.Printer, resultsDir string, iteration int) {
+// buildErrorLogPath returns the JSONL file that holds the failing build's
+// output. Build-phase failures write build.log.jsonl; go-test mode keeps the
+// iteration log for the iteration that failed to build.
+func (s *DiagnoseRunState) buildErrorLogPath(resultsDir string) string {
+	if s != nil && s.buildLogPath != "" {
+		return s.buildLogPath
+	}
+	iteration := 0
+	if s != nil {
+		iteration = s.failedFastIteration
+	}
+	return filepath.Join(resultsDir, fmt.Sprintf("iteration-%d.log.jsonl", iteration))
+}
+
+func printBuildError(out *output.Printer, jsonPath string) {
 	sep := termstyle.Bad.Render("════════════════════════════════════════")
 	_, _ = fmt.Fprintln(out.HumanStderrWriter(), sep)
 	_, _ = fmt.Fprintln(out.HumanStderrWriter(), termstyle.Bad.Render("BUILD ERROR"))
 	_, _ = fmt.Fprintln(out.HumanStderrWriter(), sep)
-	jsonPath := filepath.Join(resultsDir, fmt.Sprintf("iteration-%d.log.jsonl", iteration))
 	buildOut, err := extractBuildOutput(jsonPath)
 	if err == nil && buildOut != "" {
 		_, _ = fmt.Fprint(out.HumanStderrWriter(), buildOut)

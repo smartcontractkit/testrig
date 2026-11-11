@@ -1371,7 +1371,7 @@ func TestDiagnoseBuildErrorStopsWithoutAnalysis(t *testing.T) {
 			// Now exercise the output path that Diagnose uses.
 			stderr.Reset()
 			if !tc.aiOutput {
-				printBuildError(out, resultsDir, state.failedFastIteration)
+				printBuildError(out, state.buildErrorLogPath(resultsDir))
 				stderrOut := stderr.String()
 				assert.Contains(t, stderrOut, "BUILD ERROR")
 				assert.Contains(t, stderrOut, "# example.com/bad")
