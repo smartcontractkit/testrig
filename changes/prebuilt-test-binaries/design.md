@@ -226,10 +226,11 @@ writes, and the converter turns it into the package's final event with `Elapsed`
 
 - exit 0 → `ok  \t<pkg>\t<s>s` (with `[no tests to run]` when the binary reports it).
 - non-zero exit after a `FAIL` line → `FAIL\t<pkg>\t<s>s`.
-- non-zero exit with no `FAIL` line (for example `os.Exit(1)` in `TestMain`) → `exit status N` then `FAIL\t<pkg>\t<s>s`.
+- non-zero exit with no test output (for example `os.Exit(1)` in `TestMain`) → `exit status N` then `FAIL\t<pkg>\t<s>s`.
 
 Timeouts match `cmd/go`. The binary enforces `-test.timeout` itself and panics with `test timed out`. The executor also
-kills it at timeout plus one minute and writes `*** Test killed: ran too long (<d>).` like `cmd/go`. On `runCtx` cancel
+kills it at timeout plus one minute, or a tenth of the timeout when that is longer, and writes
+`*** Test killed: ran too long (<d>).` like `cmd/go`. On `runCtx` cancel
 it sends `os.Interrupt` to the process group, waits 5s, then kills. Buffered packages still flush, so a graceful stop
 keeps finished packages.
 
@@ -448,7 +449,7 @@ workers, reports, and compare needs deep reasoning across several packages)
       today's code into `goTestExecutor`, and add `prebuiltExecutor`: `-p` scheduling, package dir and `PWD`, env,
       test-flag translation and defaults, finish lines, timeout kill, no-test-files events, per-package buffering, and
       process-group cancel. Land the full equivalence suite with it.
-- [ ] Turn on `--build-once` by default and add `--strip-binaries`. Make go-test mode record its fallback reason and
+- [x] Turn on `--build-once` by default and add `--strip-binaries`. Make go-test mode record its fallback reason and
       print the `Accent` "building per iteration" notice, the summary build line, and the `build_mode` AI token. Set
       `SavedEstimate`. Include the parallel-iterations env test and the cancel-mid-iteration test.
 

@@ -32,9 +32,10 @@ func defaultBuildPhaseOps() buildPhaseOps {
 // Metrics is always set so report.json records the mode. Executor is non-nil
 // only when prebuilt binaries are ready; otherwise iterations use go test.
 type buildPhaseResult struct {
-	Metrics  *BuildMetrics
-	BinDir   string
-	Executor iterationExecutor
+	Metrics       *BuildMetrics
+	FallbackToken string
+	BinDir        string
+	Executor      iterationExecutor
 }
 
 // executorFor returns the run's executor. Without prebuilt binaries, iterations
@@ -81,10 +82,13 @@ func runDiagnoseBuildPhaseWithOps(
 	ops buildPhaseOps,
 ) (buildPhaseResult, error) {
 	if conf == nil || !conf.BuildOnce {
-		return buildPhaseResult{Metrics: &BuildMetrics{
-			Mode:           buildModeGoTest,
-			FallbackReason: "--build-once=false",
-		}}, nil
+		return buildPhaseResult{
+			Metrics: &BuildMetrics{
+				Mode:           buildModeGoTest,
+				FallbackReason: "--build-once=false",
+			},
+			FallbackToken: "build-once-off",
+		}, nil
 	}
 	if ctx.Err() != nil {
 		return buildPhaseResult{}, ctx.Err()
@@ -96,16 +100,19 @@ func runDiagnoseBuildPhaseWithOps(
 		GOFLAGS:     os.Getenv("GOFLAGS"),
 		ResourceEnv: flattenResourceEnv(resources),
 		BuildOnce:   conf.BuildOnce,
-		Strip:       true,
+		Strip:       conf.StripBinaries,
 	})
 	if err != nil {
 		return buildPhaseResult{}, err
 	}
 	if plan.Fallback != nil {
-		return buildPhaseResult{Metrics: &BuildMetrics{
-			Mode:           buildModeGoTest,
-			FallbackReason: plan.Fallback.Reason,
-		}}, nil
+		return buildPhaseResult{
+			Metrics: &BuildMetrics{
+				Mode:           buildModeGoTest,
+				FallbackReason: plan.Fallback.Reason,
+			},
+			FallbackToken: plan.Fallback.Token,
+		}, nil
 	}
 
 	progress := newBuildProgress(out)
@@ -339,6 +346,30 @@ func printBuildFloor(out *output.Printer, metrics *BuildMetrics, iterations int)
 		return
 	}
 	out.HumanStderr(buildFloorLine(metrics, iterations))
+}
+
+// printBuildModeNotice tells the user that iterations still build when the run
+// fell back to go test. AI output gets one short build_mode token.
+func printBuildModeNotice(out *output.Printer, result buildPhaseResult) {
+	if out == nil || result.Metrics == nil || result.Metrics.Mode != buildModeGoTest {
+		return
+	}
+	token := result.FallbackToken
+	if token == "" {
+		token = "go-test"
+	}
+	if out.AIOutput() {
+		out.Stderrf("build_mode go-test reason=%s\n", token)
+		return
+	}
+	reason := result.Metrics.FallbackReason
+	if reason == "" {
+		reason = "go test"
+	}
+	out.HumanStderr(
+		termstyle.Accent.Render("building per iteration: "+reason) +
+			termstyle.Muted.Render(" · iteration times include compile and link"),
+	)
 }
 
 func buildFloorLine(metrics *BuildMetrics, iterations int) string {

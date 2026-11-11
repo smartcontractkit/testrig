@@ -31,6 +31,7 @@ type App struct {
 	Shuffle            bool
 	Trace              bool
 	BuildOnce          bool
+	StripBinaries      bool
 	IterationSetup     string
 	IterationTeardown  string
 	shellHooks         map[string]string
@@ -152,6 +153,14 @@ var flagRegistry = map[string]flagBinder{
 			return err
 		}
 		conf.BuildOnce = v
+		return nil
+	},
+	"strip-binaries": func(conf *App, flags *pflag.FlagSet) error {
+		v, err := flags.GetBool("strip-binaries")
+		if err != nil {
+			return err
+		}
+		conf.StripBinaries = v
 		return nil
 	},
 }

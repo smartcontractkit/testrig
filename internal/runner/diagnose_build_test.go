@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/smartcontractkit/testrig/internal/config"
+	"github.com/smartcontractkit/testrig/internal/gobuild"
 	"github.com/smartcontractkit/testrig/internal/output"
 )
 
@@ -33,6 +34,7 @@ func TestRunDiagnoseBuildPhaseFallbacks(t *testing.T) {
 	require.NotNil(t, result.Metrics)
 	assert.Equal(t, buildModeGoTest, result.Metrics.Mode)
 	assert.Equal(t, "--build-once=false", result.Metrics.FallbackReason)
+	assert.Equal(t, "build-once-off", result.FallbackToken)
 	assert.Empty(t, result.BinDir)
 	assert.Nil(t, result.Executor)
 
@@ -49,8 +51,79 @@ func TestRunDiagnoseBuildPhaseFallbacks(t *testing.T) {
 	require.NotNil(t, result.Metrics)
 	assert.Equal(t, buildModeGoTest, result.Metrics.Mode)
 	assert.Contains(t, result.Metrics.FallbackReason, "-coverprofile needs go test")
+	assert.Equal(t, "coverprofile", result.FallbackToken)
 	assert.Empty(t, result.BinDir)
 	assert.Nil(t, result.Executor)
+}
+
+func TestPrintBuildModeNotice(t *testing.T) {
+	t.Parallel()
+
+	goTest := buildPhaseResult{
+		Metrics: &BuildMetrics{
+			Mode:           buildModeGoTest,
+			FallbackReason: "-coverprofile needs go test",
+		},
+		FallbackToken: "coverprofile",
+	}
+
+	var stderr strings.Builder
+	out := output.NewForTest(false, io.Discard, &stderr, false)
+	printBuildModeNotice(out, goTest)
+	assert.Equal(
+		t,
+		"building per iteration: -coverprofile needs go test · iteration times include compile and link\n",
+		stripANSI(stderr.String()),
+	)
+
+	stderr.Reset()
+	out = output.NewForTest(true, io.Discard, &stderr, false)
+	printBuildModeNotice(out, goTest)
+	assert.Equal(t, "build_mode go-test reason=coverprofile\n", stderr.String())
+
+	stderr.Reset()
+	out = output.NewForTest(false, io.Discard, &stderr, false)
+	printBuildModeNotice(out, buildPhaseResult{Metrics: &BuildMetrics{Mode: buildModePrebuilt}})
+	assert.Empty(t, stderr.String())
+}
+
+func TestBuildPhaseSetsSavedEstimate(t *testing.T) {
+	t.Parallel()
+
+	ops := buildPhaseOps{
+		compile: func(context.Context, gobuild.BuildPlan) (*gobuild.CompileResult, error) {
+			return &gobuild.CompileResult{
+				Packages: []gobuild.Package{{ImportPath: "example.com/a", Name: "a", BinaryName: "a"}},
+				GraphOK:  true,
+			}, nil
+		},
+		link: func(context.Context, gobuild.BuildPlan, []gobuild.Package) (*gobuild.Build, error) {
+			return &gobuild.Build{Metrics: gobuild.BuildMetrics{
+				LinkWall: 10 * time.Second,
+				Floor:    10 * time.Second,
+				Binaries: 1,
+				Stripped: true,
+			}}, nil
+		},
+	}
+
+	out := output.NewForTest(true, io.Discard, io.Discard, false)
+	result, err := runDiagnoseBuildPhaseWithOps(
+		context.Background(),
+		&config.App{BuildOnce: true, StripBinaries: true, Iterations: 4},
+		out,
+		t.TempDir(),
+		t.TempDir(),
+		[]string{"./..."},
+		nil,
+		ops,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(result.BinDir) })
+	require.NotNil(t, result.Metrics)
+	assert.Equal(t, 10*time.Second, result.Metrics.Floor)
+	assert.Equal(t, 30*time.Second, result.Metrics.SavedEstimate)
+	assert.True(t, result.Metrics.Stripped)
 }
 
 func TestPrintBuildLines(t *testing.T) {

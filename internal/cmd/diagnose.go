@@ -100,7 +100,9 @@ run by name.`,
 	cmd.Flags().
 		Bool("trace", false, "visualize the test execution traces")
 	cmd.Flags().
-		Bool("build-once", false, "build test binaries once before running iterations")
+		Bool("build-once", true, "build test binaries once before running iterations")
+	cmd.Flags().
+		Bool("strip-binaries", true, "strip linked test binaries unless go test -ldflags is set")
 
 	cmd.AddCommand(newDiagnoseAnalyzeCmd())
 

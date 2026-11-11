@@ -631,6 +631,8 @@ func runDiagnoseIterations(
 	}
 	executor := buildResult.executorFor(moduleDir, adjustedArgs)
 
+	printBuildModeNotice(out, buildResult)
+
 	if !out.AIOutput() {
 		printDiagnoseIterationTableHeader(out, tableOpts)
 	}
