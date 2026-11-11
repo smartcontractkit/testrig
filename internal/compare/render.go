@@ -13,6 +13,7 @@ func render(doc comparison) string {
 		fmt.Fprintf(&b, "> [!WARNING]\n> %s\n\n", warning)
 	}
 	renderRuns(&b, doc)
+	renderBuild(&b, doc)
 	renderSummary(&b, doc)
 	renderProblemTests(&b, doc)
 	renderPackageBreakdown(&b, doc)
@@ -30,6 +31,18 @@ func renderRuns(b *strings.Builder, doc comparison) {
 	writeTable(b, []string{"", doc.beforeLabel, doc.afterLabel}, rows)
 }
 
+func renderBuild(b *strings.Builder, doc comparison) {
+	if len(doc.build) == 0 {
+		return
+	}
+	b.WriteString("## Build\n\n")
+	rows := make([][]string, 0, len(doc.build))
+	for _, r := range doc.build {
+		rows = append(rows, []string{r.label, r.before, r.after})
+	}
+	writeTable(b, []string{"", doc.beforeLabel, doc.afterLabel}, rows)
+}
+
 func renderSummary(b *strings.Builder, doc comparison) {
 	b.WriteString("## Summary\n\n")
 	rows := make([][]string, 0, len(doc.summary))
@@ -41,6 +54,9 @@ func renderSummary(b *strings.Builder, doc comparison) {
 		rows = append(rows, []string{r.label, r.before, r.after, r.change, evidence})
 	}
 	writeTable(b, []string{"Metric", doc.beforeLabel, doc.afterLabel, "Change", "Evidence"}, rows)
+	if doc.buildSpeedNote != "" {
+		fmt.Fprintf(b, "> [!NOTE]\n> %s\n\n", doc.buildSpeedNote)
+	}
 }
 
 func renderProblemTests(b *strings.Builder, doc comparison) {

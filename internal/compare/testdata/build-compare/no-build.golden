@@ -1,0 +1,45 @@
+# testrig compare: before-race → after-race
+
+## Runs
+
+|  | before-race | after-race |
+| --- | --- | --- |
+| Started at | — | — |
+| Iterations | 5 | 5 |
+| go test args | `./...` | `./...` |
+| Race | no | no |
+| Shuffle | no | no |
+| Slow threshold | 30s | 30s |
+
+## Summary
+
+| Metric | before-race | after-race | Change | Evidence |
+| --- | --- | --- | --- | --- |
+| Tests run | 1432 | 1432 | 0 | — |
+| Broken tests | 0 | 0 | 0 | — |
+| Flaky tests | 0 | 0 | 0 | — |
+| Timeouts | 0 | 0 | 0 | — |
+| Slow tests | 0 | 0 | 0 | — |
+| Flaky iterations | 0/5 (0.0%) | 0/5 (0.0%) |  | — |
+| Iteration wall time p50 | 33s | 34s | +1s (+3%) ❌ | — |
+| Iteration wall time max | 36s | 37s | +1s (+3%) ❌ | — |
+
+## Problem tests
+
+_No problem tests in either run._
+
+## Package breakdown
+
+### Flakes by package
+
+_No flaky tests in either run._
+
+### Speed by package
+
+_No package exceeded the slow threshold in either run._
+
+---
+
+Before: `diagnose-before-race`
+
+After: `diagnose-after-race`

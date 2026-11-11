@@ -100,6 +100,8 @@ type comparison struct {
 	afterPath            string
 	warnings             []string
 	runs                 []row
+	build                []row
+	buildSpeedNote       string
 	summary              []row
 	testSections         []testSection
 	racesCompared        bool
@@ -121,6 +123,8 @@ func diff(before, after Run) comparison {
 	}
 	doc.warnings = diffWarnings(before.Report, after.Report)
 	doc.runs = diffRunRows(before.Report, after.Report)
+	doc.build = diffBuildRows(before.Report, after.Report)
+	doc.buildSpeedNote = diffBuildSpeedNote(before.Report, after.Report)
 	doc.summary = diffSummaryRows(before.Report, after.Report)
 	// Race counts only make sense when both runs enabled -race. Comparing a race
 	// run to a non-race run would always show races "fixed".
@@ -236,6 +240,113 @@ func diffRunRows(before, after *runner.Report) []row {
 			after:  durationOrDash(a.SlowThreshold),
 		},
 	}
+}
+
+// buildModeGoTest is the fallback mode where every iteration runs `go test`
+// and so pays the compile and link floor.
+const buildModeGoTest = "go-test"
+
+func buildOf(rep *runner.Report) *runner.BuildMetrics {
+	if rep == nil {
+		return nil
+	}
+	return rep.Build
+}
+
+// diffBuildRows renders the build overhead table. A report written before
+// build metrics existed has no Build field, so the section only appears when at
+// least one side has one; the missing side shows dashes.
+func diffBuildRows(before, after *runner.Report) []row {
+	b, a := buildOf(before), buildOf(after)
+	if b == nil && a == nil {
+		return nil
+	}
+	return []row{
+		{label: "Mode", before: buildModeCell(b), after: buildModeCell(a)},
+		{label: "Cache", before: buildCacheCell(b), after: buildCacheCell(a)},
+		{label: "Compile wall", before: buildDurationCell(b, func(m *runner.BuildMetrics) time.Duration {
+			return m.CompileWall
+		}), after: buildDurationCell(a, func(m *runner.BuildMetrics) time.Duration {
+			return m.CompileWall
+		})},
+		{label: "Link wall", before: buildDurationCell(b, func(m *runner.BuildMetrics) time.Duration {
+			return m.LinkWall
+		}), after: buildDurationCell(a, func(m *runner.BuildMetrics) time.Duration {
+			return m.LinkWall
+		})},
+		{label: "Floor", before: buildDurationCell(b, func(m *runner.BuildMetrics) time.Duration {
+			return m.Floor
+		}), after: buildDurationCell(a, func(m *runner.BuildMetrics) time.Duration {
+			return m.Floor
+		})},
+		{label: "Binaries", before: buildCountCell(b, func(m *runner.BuildMetrics) int {
+			return m.Binaries
+		}), after: buildCountCell(a, func(m *runner.BuildMetrics) int {
+			return m.Binaries
+		})},
+		{label: "External links", before: buildCountCell(b, func(m *runner.BuildMetrics) int {
+			return m.ExternalLink
+		}), after: buildCountCell(a, func(m *runner.BuildMetrics) int {
+			return m.ExternalLink
+		})},
+		{label: "Stripped", before: buildStrippedCell(b), after: buildStrippedCell(a)},
+	}
+}
+
+// buildMetricsApply reports whether the per-step fields in m mean anything. In
+// go-test mode a report carries only Mode and FallbackReason.
+func buildMetricsApply(m *runner.BuildMetrics) bool {
+	return m != nil && m.Mode != buildModeGoTest
+}
+
+func buildModeCell(m *runner.BuildMetrics) string {
+	if m == nil || m.Mode == "" {
+		return "—"
+	}
+	if m.FallbackReason == "" {
+		return m.Mode
+	}
+	return fmt.Sprintf("%s (%s)", m.Mode, m.FallbackReason)
+}
+
+func buildCacheCell(m *runner.BuildMetrics) string {
+	if !buildMetricsApply(m) || m.Cache == "" {
+		return "—"
+	}
+	return m.Cache
+}
+
+func buildDurationCell(m *runner.BuildMetrics, get func(*runner.BuildMetrics) time.Duration) string {
+	if !buildMetricsApply(m) {
+		return "—"
+	}
+	return durationOrDash(get(m))
+}
+
+func buildCountCell(m *runner.BuildMetrics, get func(*runner.BuildMetrics) int) string {
+	if !buildMetricsApply(m) {
+		return "—"
+	}
+	return strconv.Itoa(get(m))
+}
+
+func buildStrippedCell(m *runner.BuildMetrics) string {
+	if !buildMetricsApply(m) {
+		return "—"
+	}
+	return yesNo(m.Stripped)
+}
+
+// diffBuildSpeedNote warns when iteration wall times came from different build
+// modes. go-test iterations include compile and link; prebuilt iterations do
+// not, so their durations measure different work.
+func diffBuildSpeedNote(before, after *runner.Report) string {
+	b, a := buildOf(before), buildOf(after)
+	if b == nil || a == nil || b.Mode == "" || a.Mode == "" || b.Mode == a.Mode {
+		return ""
+	}
+	return "Iteration wall times are not comparable across build modes: the go-test run includes " +
+		"the compile and link floor in every iteration, while the prebuilt run does not."
 }
 
 func formatTime(t time.Time) string {
