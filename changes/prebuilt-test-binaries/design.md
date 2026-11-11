@@ -459,6 +459,6 @@ Effort: medium (follows existing compare row and golden-test patterns, plus livi
 
 - [x] Add the Build table and the mixed-mode speed note to `compare`, with golden tests for prebuilt vs prebuilt,
       prebuilt vs go-test, and an old report without `build`.
-- [ ] Docs: add a concept doc for the build phase (modes, fallback rules, floor, cache states, hooks caveat, temp dir)
+- [x] Docs: add a concept doc for the build phase (modes, fallback rules, floor, cache states, hooks caveat, temp dir)
       and a reference doc for the `build` report fields and the two flags. Run `good-vibes docs lint` and
       `good-vibes docs index`.
