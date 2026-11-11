@@ -113,6 +113,7 @@ func TestLoadBindsPersistentAndLocalFlags(t *testing.T) {
 	sub.Flags().String("name", "", "")
 	sub.Flags().StringSlice("fail-fast-on", nil, "")
 	sub.Flags().Bool("shuffle-seed", false, "")
+	sub.Flags().Bool("build-once", false, "")
 	root.AddCommand(sub)
 	root.SetArgs([]string{
 		"sub",
@@ -123,6 +124,7 @@ func TestLoadBindsPersistentAndLocalFlags(t *testing.T) {
 		"--name", "before-race",
 		"--fail-fast-on", "timeout,slow",
 		"--shuffle-seed",
+		"--build-once",
 	})
 
 	cmd, err := root.ExecuteC()
@@ -137,6 +139,7 @@ func TestLoadBindsPersistentAndLocalFlags(t *testing.T) {
 	assert.Equal(t, "before-race", conf.Name)
 	assert.Equal(t, []string{"timeout", "slow"}, conf.FailFastOn)
 	assert.True(t, conf.Shuffle)
+	assert.True(t, conf.BuildOnce)
 }
 
 func TestLoadDefaultsWhenFlagsMissing(t *testing.T) {
@@ -161,4 +164,5 @@ func TestLoadDefaultsWhenFlagsMissing(t *testing.T) {
 	assert.False(t, conf.FailFast)
 	assert.Nil(t, conf.FailFastOn)
 	assert.False(t, conf.Shuffle)
+	assert.False(t, conf.BuildOnce)
 }

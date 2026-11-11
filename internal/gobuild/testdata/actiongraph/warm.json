@@ -1,0 +1,18 @@
+[
+  {"ID": 1, "Mode": "build", "Package": "internal/a", "Cmd": null, "CmdReal": 0},
+  {"ID": 2, "Mode": "build", "Package": "internal/b", "Cmd": null, "CmdReal": 0},
+  {"ID": 3, "Mode": "build", "Package": "internal/c", "Cmd": null, "CmdReal": 0},
+  {"ID": 4, "Mode": "build", "Package": "internal/d", "Cmd": null, "CmdReal": 0},
+  {"ID": 5, "Mode": "build", "Package": "internal/e", "Cmd": null, "CmdReal": 0},
+  {"ID": 6, "Mode": "build", "Package": "internal/f", "Cmd": null, "CmdReal": 0},
+  {"ID": 7, "Mode": "build", "Package": "internal/g", "Cmd": null, "CmdReal": 0},
+  {"ID": 8, "Mode": "build", "Package": "internal/h", "Cmd": null, "CmdReal": 0},
+  {"ID": 9, "Mode": "build", "Package": "internal/i", "Cmd": null, "CmdReal": 0},
+  {"ID": 10, "Mode": "build", "Package": "internal/j", "Cmd": null, "CmdReal": 0},
+  {"ID": 11, "Mode": "build check cache", "Package": "internal/a", "Cmd": null, "CmdReal": 0},
+  {"ID": 12, "Mode": "build check cache", "Package": "internal/b", "Cmd": null, "CmdReal": 0},
+  {"ID": 13, "Mode": "link", "Package": "example.com/pkg.test", "Cmd": ["link"], "CmdReal": 1000000000},
+  {"ID": 14, "Mode": "vet", "Package": "example.com/pkg", "Cmd": ["vet"], "CmdReal": 500000000},
+  {"ID": 15, "Mode": "vet", "Package": "internal/a", "Cmd": ["vet"], "CmdReal": 500000000},
+  {"ID": 16, "Mode": "vet", "Package": "internal/b", "Cmd": ["vet"], "CmdReal": 500000000}
+]

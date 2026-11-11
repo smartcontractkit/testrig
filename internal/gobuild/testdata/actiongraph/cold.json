@@ -1,0 +1,11 @@
+[
+  {"ID": 1, "Mode": "build", "Package": "internal/a", "Cmd": ["compile"], "CmdReal": 2000000000},
+  {"ID": 2, "Mode": "build", "Package": "internal/b", "Cmd": ["compile"], "CmdReal": 2000000000},
+  {"ID": 3, "Mode": "build", "Package": "internal/c", "Cmd": ["compile"], "CmdReal": 2000000000},
+  {"ID": 4, "Mode": "build", "Package": "internal/d", "Cmd": ["compile"], "CmdReal": 2000000000},
+  {"ID": 5, "Mode": "build", "Package": "internal/e", "Cmd": ["compile"], "CmdReal": 2000000000},
+  {"ID": 6, "Mode": "build check cache", "Package": "internal/a", "Cmd": null, "CmdReal": 0},
+  {"ID": 7, "Mode": "link", "Package": "example.com/pkg.test", "Cmd": ["link"], "CmdReal": 3000000000},
+  {"ID": 8, "Mode": "vet", "Package": "example.com/pkg", "Cmd": ["vet"], "CmdReal": 1000000000},
+  {"ID": 9, "Mode": "vet", "Package": "internal/a", "Cmd": ["vet"], "CmdReal": 1000000000}
+]

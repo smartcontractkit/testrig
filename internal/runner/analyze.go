@@ -192,6 +192,7 @@ type ReportSummary struct {
 // Report classifies tests across iterations of a diagnose run.
 type Report struct {
 	Run                *RunMeta           `json:"run,omitempty"`
+	Build              *BuildMetrics      `json:"build,omitempty"`
 	Iterations         int                `json:"iterations"`
 	SlowThreshold      time.Duration      `json:"slow_threshold"`
 	Summary            *ReportSummary     `json:"summary,omitempty"`
@@ -1319,6 +1320,9 @@ func PrintSummary(w io.Writer, rep *Report) {
 func printOverallStats(w io.Writer, rep *Report) {
 	if rep == nil {
 		return
+	}
+	if line := overallBuildLine(rep); line != "" {
+		_, _ = fmt.Fprintln(w, termstyle.Muted.Render("  "+line))
 	}
 	hasFindings := len(rep.Failures) > 0 || len(rep.Races) > 0 || len(rep.Flakes) > 0 || len(rep.Timeouts) > 0 ||
 		len(rep.Slow) > 0 || len(rep.SlowestPackages) > 0

@@ -64,6 +64,7 @@ type DiagnoseRunState struct {
 	failedFastReason    string
 	failedFastIteration int // 0-based diagnose iteration index; -1 if unset
 	GracefulStop        bool
+	Build               *BuildMetrics `json:"build,omitempty"`
 	iterDurations       []time.Duration
 	shuffleSeeds        map[int]int64
 	liveProgress        bool
@@ -250,6 +251,7 @@ func FinishDiagnoseAnalysis(
 	}
 
 	if report != nil {
+		report.Build = state.Build
 		for i, d := range state.iterDurations {
 			if i >= len(report.IterationSummaries) {
 				break
@@ -598,12 +600,28 @@ func runDiagnoseIterations(
 		state.shuffleSeeds = make(map[int]int64)
 	}
 
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	buildMetrics, binDir, buildErr := runDiagnoseBuildPhase(
+		runCtx,
+		conf,
+		out,
+		moduleDir,
+		adjustedArgs,
+		resources,
+	)
+	state.Build = buildMetrics
+	if binDir != "" {
+		defer func() { _ = os.RemoveAll(binDir) }()
+	}
+	if buildErr != nil {
+		return state, buildErr
+	}
+
 	if !out.AIOutput() {
 		printDiagnoseIterationTableHeader(out, tableOpts)
 	}
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	jobs := make(chan int)
 	results := make(chan diagnoseIterationResult)
