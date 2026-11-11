@@ -6,6 +6,10 @@
 
 - [Build Phase](concepts/build-phase.md): diagnose compiles and links test binaries once per run, then reuses them for every iteration.
 
+## Decision
+
+- [Build test binaries once and report build overhead](decisions/prebuilt-test-binaries.md): Split each run into a **build phase** and a **run phase**.
+
 ## Reference
 
 - [Build Report and Flags](reference/build.md): Field reference for the build object in report.json and the flags that control the build phase.
