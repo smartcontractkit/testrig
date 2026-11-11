@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +88,20 @@ func TestPrintBuildLines(t *testing.T) {
 	ai := stderr.String()
 	assert.Contains(t, ai, "build_compile s=41 cache=cold pkgs=1910 cached=78")
 	assert.Contains(t, ai, "build_link s=78 bins=175 ext=12 strip=1 floor_s=78")
+}
+
+func TestCountTestBinaries(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for _, sub := range []string{"g0", "g1"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, sub), 0o750))
+	}
+	for _, name := range []string{"g0/a.test", "g0/b.test.exe", "g1/c.test", "g1/not-a-binary"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600))
+	}
+	assert.Equal(t, 3, countTestBinaries(dir))
+	assert.Equal(t, 0, countTestBinaries(""))
 }
 
 func TestOverallBuildLine(t *testing.T) {

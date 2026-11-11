@@ -3,7 +3,9 @@ package runner
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -52,9 +54,8 @@ func runDiagnoseBuildPhase(
 		}, "", nil
 	}
 
-	if out != nil && out.AIOutput() {
-		out.Stderrf("build_start\n")
-	}
+	progress := newBuildProgress(out)
+	progress.begin()
 
 	binDir, err = os.MkdirTemp("", "testrig-bin-")
 	if err != nil {
@@ -68,7 +69,9 @@ func runDiagnoseBuildPhase(
 	}()
 	plan.BinDir = binDir
 
+	finishCompile := progress.start("compiling", "compile started", nil)
 	compiled, err := gobuild.Compile(ctx, plan)
+	finishCompile()
 	if err != nil {
 		return nil, binDir, fmt.Errorf("build test binaries: %w", err)
 	}
@@ -87,7 +90,14 @@ func runDiagnoseBuildPhase(
 	}
 	printBuildCompiled(out, metrics)
 
+	linkTotal := len(compiled.Packages)
+	finishLink := progress.start(
+		"linking",
+		fmt.Sprintf("link started · %d test binaries", linkTotal),
+		func() (int, int) { return countTestBinaries(binDir), linkTotal },
+	)
 	linked, err := gobuild.Link(ctx, plan, compiled.Packages)
+	finishLink()
 	if err != nil {
 		return nil, binDir, fmt.Errorf("build test binaries: %w", err)
 	}
@@ -129,15 +139,18 @@ func printBuildCompiled(out *output.Printer, metrics *BuildMetrics) {
 		)
 		return
 	}
+	out.HumanStderr(buildCompiledLine(metrics))
+}
+
+func buildCompiledLine(metrics *BuildMetrics) string {
 	details := []string{
 		fmt.Sprintf("%d packages", metrics.CompileActions),
 		fmt.Sprintf("%d cached", metrics.CompileCached),
 	}
-	line := termstyle.Label.Render("compiled") + " " +
-		termstyle.Muted.Render("["+formatDiagnoseWallClock(metrics.CompileWall)+"]") + " " +
+	return termstyle.Label.Render("compiled") + " " +
+		progressBracket(termstyle.Muted.Render(formatDiagnoseWallClock(metrics.CompileWall))) + " " +
 		termstyle.Muted.Render("· "+strings.Join(details, " · ")+" · ") +
 		buildCacheStyle(metrics.Cache).Render(metrics.Cache+" cache")
-	out.HumanStderr(line)
 }
 
 func printBuildLinked(out *output.Printer, metrics *BuildMetrics) {
@@ -155,6 +168,10 @@ func printBuildLinked(out *output.Printer, metrics *BuildMetrics) {
 		)
 		return
 	}
+	out.HumanStderr(buildLinkedLine(metrics))
+}
+
+func buildLinkedLine(metrics *BuildMetrics) string {
 	details := []string{
 		fmt.Sprintf("%d test binaries", metrics.Binaries),
 		fmt.Sprintf("%d likely external link (cgo)", metrics.ExternalLink),
@@ -167,16 +184,19 @@ func printBuildLinked(out *output.Printer, metrics *BuildMetrics) {
 	if vetShare := vetDetail(metrics.VetTotal, metrics.LinkWall); vetShare != "" {
 		details = append(details, vetShare)
 	}
-	line := termstyle.Label.Render("linked") + " " +
-		termstyle.Muted.Render("["+formatDiagnoseWallClock(metrics.LinkWall)+"]") + " " +
+	return termstyle.Label.Render("linked") + " " +
+		progressBracket(termstyle.Muted.Render(formatDiagnoseWallClock(metrics.LinkWall))) + " " +
 		termstyle.Muted.Render("· "+strings.Join(details, " · "))
-	out.HumanStderr(line)
 }
 
 func printBuildFloor(out *output.Printer, metrics *BuildMetrics, iterations int) {
 	if out == nil || metrics == nil || out.AIOutput() || metrics.Floor <= 0 {
 		return
 	}
+	out.HumanStderr(buildFloorLine(metrics, iterations))
+}
+
+func buildFloorLine(metrics *BuildMetrics, iterations int) string {
 	line := termstyle.Muted.Render("build floor ") +
 		termstyle.Label.Render(formatDiagnoseWallClock(metrics.Floor)) +
 		termstyle.Muted.Render(" per iteration")
@@ -185,7 +205,27 @@ func printBuildFloor(out *output.Printer, metrics *BuildMetrics, iterations int)
 			fmt.Sprintf(" · saves ~%s over %d iterations", formatDiagnoseWallClock(metrics.SavedEstimate), iterations),
 		)
 	}
-	out.HumanStderr(line)
+	return line
+}
+
+// countTestBinaries counts linked .test binaries under dir. The link step
+// writes one group subdirectory at a time, so this is the live link count.
+func countTestBinaries(dir string) int {
+	if dir == "" {
+		return 0
+	}
+	count := 0
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasSuffix(name, ".test") || strings.HasSuffix(name, ".test.exe") {
+			count++
+		}
+		return nil
+	})
+	return count
 }
 
 func buildCacheStyle(cache string) interface{ Render(...string) string } {

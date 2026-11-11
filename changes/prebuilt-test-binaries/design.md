@@ -430,7 +430,7 @@ workers, reports, and compare needs deep reasoning across several packages)
       `runDiagnoseIterations` behind `--build-once` (default `false` in this phase), with bindir cleanup on success,
       error, and cancel. Write `Report.Build`, the terminal build line, and the `--ai-output` field. Iterations still use
       `go test`. Include the plan table tests, actiongraph parser tests, and the name-collision fixture.
-- [ ] Add the `buildProgress` helper and the build output from "Terminal output": live and non-TTY step lines, the
+- [x] Add the `buildProgress` helper and the build output from "Terminal output": live and non-TTY step lines, the
       `[n/total]` link count from the bin dir, the floor line, the summary build line, and the `--ai-output` tokens.
       Include golden tests for live, non-TTY, and AI output, with styles checked through the existing test printer.
 - [ ] Move build failures to the build phase when `--build-once` is on: write `build.log.jsonl`, fail fast with

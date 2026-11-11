@@ -1,0 +1,5 @@
+[38;5;245mcompile started[m
+[1;38;5;39mcompiled[m [38;5;245m[[m[38;5;245m41.20s[m[38;5;245m][m [38;5;245m· 1910 packages · 78 cached · [m[38;5;214mcold cache[m
+[38;5;245mlink started · 175 test binaries[m
+[1;38;5;39mlinked[m [38;5;245m[[m[38;5;245m1m18.40s[m[38;5;245m][m [38;5;245m· 175 test binaries · 12 likely external link (cgo) · stripped · vet 4s[m
+[38;5;245mbuild floor [m[1;38;5;39m1m18.40s[m[38;5;245m per iteration[m[38;5;245m · saves ~24m50s over 20 iterations[m
